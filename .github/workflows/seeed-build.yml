@@ -1,0 +1,299 @@
+name: Seeed Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Board name"
+        required: true
+        type: choice
+        options:
+          - recomputer-rk3576-devkit
+          - recomputer-rk3588-devkit
+        default: recomputer-rk3576-devkit
+      release:
+        description: "Release/distro (e.g. trixie, bookworm, noble, jammy)"
+        required: true
+        type: choice
+        options:
+          - trixie
+          - bookworm
+          - bullseye
+          - noble
+          - jammy
+          - focal
+        default: trixie
+      desktop:
+        description: "Desktop environment"
+        required: true
+        type: choice
+        options:
+          - gnome
+          - xfce
+          - kde-plasma
+          - mate
+          - cinnamon
+        default: gnome
+      tier:
+        description: "Desktop tier"
+        required: true
+        type: choice
+        options:
+          - minimal
+          - mid
+          - full
+        default: mid
+      build_mode:
+        description: "Build mode (full = kernel+uboot+rootfs+image)"
+        required: true
+        type: choice
+        options:
+          - full
+          - kernel
+          - uboot
+          - minimal
+        default: full
+      profiles:
+        description: "Feature profiles, space-separated (recovery ab secure-boot optee). Leave empty for plain desktop build."
+        required: false
+        type: string
+        default: ""
+      extension_ref:
+        description: "seeed_armbian_extension ref (branch/tag/commit) on Mkiring fork"
+        required: true
+        type: string
+        default: "main"
+      kernel_ref:
+        description: "linux-rockchip kernel ref (branch/tag/commit) on Mkiring fork. Default matches board family."
+        required: false
+        type: string
+        default: ""
+      clear_kernel_cache:
+        description: "Clear kernel deb/worktree cache before build"
+        required: false
+        type: boolean
+        default: false
+      clear_rootfs_cache:
+        description: "Clear rootfs cache before build"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: seeed-build-${{ github.ref }}-${{ inputs.board }}-${{ inputs.release }}
+  cancel-in-progress: false
+
+env:
+  PRIVATE_CCACHE: "yes"
+  USE_CCACHE: "yes"
+  ENABLE_SEEED_RK_EXTENSION: "yes"
+  KERNEL_CONFIGURE: "no"
+  ARMBIAN_RUNNING_IN_CONTAINER: "yes"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+
+    steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                     /usr/local/share/boost /usr/local/share/openssl
+          sudo apt-get purge -y --auto-remove \
+                     'ghc-*' 'dotnet-*' 'llvm-*' 'azure-cli*' \
+                     'firefox*' 'google-chrome*' 'powershell*' 'snapd' || true
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          docker system prune -af --volumes || true
+          echo "Disk space after cleanup:"
+          df -h /
+
+      - name: Checkout armbian-build (this fork)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve kernel ref
+        id: kernel_ref
+        run: |
+          ref="${{ inputs.kernel_ref }}"
+          if [ -z "$ref" ]; then
+            case "${{ inputs.board }}" in
+              recomputer-rk3576-devkit) ref="rk-6.1-rkr5.1" ;;
+              recomputer-rk3588-devkit) ref="rk-6.1-rkr5.1" ;;
+              *) ref="rk-6.1-rkr5.1" ;;
+            esac
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved kernel ref: $ref"
+
+      - name: Inject fork URLs into board configs
+        run: |
+          # Replace seeed_armbian_extension source with Mkiring fork
+          sed -i 's|https://github.com/Seeed-Studio/seeed_armbian_extension|https://github.com/Mkiring/seeed_armbian_extension|g' \
+              config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
+
+          # Replace linux-rockchip kernel source with Mkiring fork
+          sed -i 's|https://github.com/armbian/linux-rockchip.git|https://github.com/Mkiring/linux-rockchip.git|g' \
+              config/sources/families/seeed-rk3576.conf \
+              config/sources/families/seeed-rk3588.conf \
+              config/sources/families/rk35xx.conf
+
+          echo "=== Verifying substitution ==="
+          grep -rn "seeed_armbian_extension" config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -3
+          grep -rn "linux-rockchip" config/sources/families/ 2>/dev/null | grep -E "KERNELSOURCE" | head -5
+
+      - name: Pre-place seeed_armbian_extension fork
+        run: |
+          mkdir -p cache/sources
+          git clone --depth 1 --branch "${{ inputs.extension_ref }}" \
+              https://github.com/Mkiring/seeed_armbian_extension \
+              cache/sources/seeed_armbian_extension
+          # Symlink so board config's enable_extension picks our pre-placed copy
+          mkdir -p extensions
+          ln -sf "$PWD/cache/sources/seeed_armbian_extension" extensions/seeed_armbian_extension
+
+      - name: Symlink build.sh into repo root
+        run: |
+          # build.sh does `cd $SCRIPT_DIR; [[ -f compile.sh ]]`, so it must
+          # live in the armbian-build root where compile.sh is.
+          ln -sf "$PWD/cache/sources/seeed_armbian_extension/scripts/build.sh" seeed-build.sh
+          ls -la seeed-build.sh
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: cache/ccache
+          key: ccache-${{ inputs.board }}-vendor-${{ steps.kernel_ref.outputs.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ inputs.board }}-vendor-${{ steps.kernel_ref.outputs.ref }}-
+            ccache-${{ inputs.board }}-vendor-
+            ccache-${{ inputs.board }}-
+
+      - name: Restore source cache (kernel/u-boot)
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache/sources/linux-kernel-worktree
+            cache/sources/u-boot
+          key: sources-${{ inputs.board }}-${{ steps.kernel_ref.outputs.ref }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
+          restore-keys: |
+            sources-${{ inputs.board }}-${{ steps.kernel_ref.outputs.ref }}-
+            sources-${{ inputs.board }}-
+
+      - name: Restore rootfs cache
+        if: ${{ !inputs.clear_rootfs_cache }}
+        uses: actions/cache@v4
+        with:
+          path: cache/rootfs
+          key: rootfs-${{ inputs.release }}-${{ inputs.tier }}-${{ inputs.desktop }}-${{ hashFiles('config/sources/**/*.inc') }}
+          restore-keys: |
+            rootfs-${{ inputs.release }}-${{ inputs.tier }}-${{ inputs.desktop }}-
+            rootfs-${{ inputs.release }}-
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          MODE_ARGS=""
+          case "${{ inputs.build_mode }}" in
+            kernel)  MODE_ARGS="--kernel" ;;
+            uboot)   MODE_ARGS="--uboot" ;;
+            minimal) MODE_ARGS="--minimal" ;;
+            full)    MODE_ARGS="" ;;
+          esac
+
+          # Passphrase for encrypted profiles; not a real secret in CI test.
+          export CRYPTROOT_PASSPHRASE="${{ secrets.CRYPTROOT_PASSPHRASE || 'armbian-ci-test' }}"
+
+          # shellcheck disable=SC2086
+          ./seeed-build.sh \
+            $MODE_ARGS \
+            ${{ inputs.profiles }} \
+            -b "${{ inputs.board }}" \
+            -R "${{ inputs.release }}" \
+            -d "${{ inputs.desktop }}" \
+            -t "${{ inputs.tier }}" \
+            ${{ inputs.clear_kernel_cache && '-c' || '' }} \
+            ${{ inputs.clear_rootfs_cache && '-r' || '' }}
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/debs artifacts/images artifacts/logs
+          # Compress img files with xz (parallel, high compression)
+          if compgen -G "output/images/*.img" > /dev/null 2>&1; then
+            find output/images -maxdepth 1 -name '*.img' -type f -print0 \
+              | xargs -0 -P"$(nproc)" -I{} xz -T0 -9 -v {}
+          fi
+          # Copy compressed images
+          cp output/images/*.img.xz artifacts/images/ 2>/dev/null || true
+          # Copy deb packages
+          cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
+          # Copy build logs if any
+          cp -r output/config-backups/* artifacts/logs/ 2>/dev/null || \
+            cp -r .tmp/*.log artifacts/logs/ 2>/dev/null || true
+          # Manifest
+          {
+            echo "## Build artifacts"
+            echo ""
+            echo "- Board: \`${{ inputs.board }}\`"
+            echo "- Release: \`${{ inputs.release }}\`"
+            echo "- Desktop: \`${{ inputs.desktop }}\` (\`${{ inputs.tier }}\`)"
+            echo "- Build mode: \`${{ inputs.build_mode }}\`"
+            echo "- Profiles: \`${{ inputs.profiles || 'none' }\`"
+            echo "- Kernel ref: \`${{ steps.kernel_ref.outputs.ref }}\`"
+            echo "- Extension ref: \`${{ inputs.extension_ref }}\`"
+            echo "- Run: ${{ github.run_id }}"
+            echo ""
+            echo "### Images"
+            ! compgen -G "artifacts/images/*.img.xz" > /dev/null 2>&1 || \
+              ls -lh artifacts/images/ | tail -n +2
+            echo ""
+            echo "### Debs"
+            ! compgen -G "artifacts/debs/*.deb" > /dev/null 2>&1 || \
+              ls -lh artifacts/debs/ | tail -n +2
+          } > artifacts/README.md
+          # Print summary to CI output
+          cat artifacts/README.md
+
+      - name: Upload images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          path: artifacts/images/*.img.xz
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload debs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          path: artifacts/debs/*.deb
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload manifest and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          path: |
+            artifacts/README.md
+            artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Print ccache stats
+        if: always()
+        run: |
+          command -v ccache >/dev/null 2>&1 || { echo "ccache not installed on host"; exit 0; }
+          ccache -s 2>/dev/null || true
+          du -sh cache/ccache 2>/dev/null || true
