@@ -83,6 +83,7 @@ env:
   USE_CCACHE: "yes"
   ENABLE_SEEED_RK_EXTENSION: "yes"
   KERNEL_CONFIGURE: "no"
+  VENDOR: "Armbian"
 
 jobs:
   build:
