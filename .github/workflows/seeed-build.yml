@@ -197,13 +197,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/debs artifacts/images artifacts/logs
-          # Compress img files with xz (parallel, high compression)
-          if compgen -G "output/images/*.img" > /dev/null 2>&1; then
-            find output/images -maxdepth 1 -name '*.img' -type f -print0 \
-              | xargs -0 -P"$(nproc)" -I{} xz -T0 -9 -v {}
-          fi
-          # Copy compressed images
-          cp output/images/*.img.xz artifacts/images/ 2>/dev/null || true
+          # Compress img via shell redirect. The .img files are created by the
+          # docker build container as root, so xz's default behavior of cloning
+          # source ownership onto the .xz output fails with "Cannot set the file
+          # group: Operation not permitted" on the host. Redirecting through
+          # stdout makes the runner user own the output natively.
+          shopt -s nullglob
+          for img in output/images/*.img; do
+            base="$(basename "$img" .img).img.xz"
+            echo "Compressing $img -> artifacts/images/$base"
+            xz -T0 -9 -v < "$img" > "artifacts/images/$base"
+          done
           # Copy deb packages
           cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
           # Copy build logs if any
