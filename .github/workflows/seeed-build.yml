@@ -83,11 +83,10 @@ env:
   USE_CCACHE: "yes"
   ENABLE_SEEED_RK_EXTENSION: "yes"
   KERNEL_CONFIGURE: "no"
-  ARMBIAN_RUNNING_IN_CONTAINER: "yes"
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 600
 
     steps:
@@ -143,10 +142,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/ccache
-          key: ccache-${{ inputs.board }}-vendor-${{ github.sha }}
+          key: ccache-arm64-${{ inputs.board }}-vendor-${{ github.sha }}
           restore-keys: |
-            ccache-${{ inputs.board }}-vendor-
-            ccache-${{ inputs.board }}-
+            ccache-arm64-${{ inputs.board }}-vendor-
+            ccache-arm64-${{ inputs.board }}-
 
       - name: Restore source cache (kernel/u-boot)
         uses: actions/cache@v4
@@ -154,9 +153,9 @@ jobs:
           path: |
             cache/sources/linux-kernel-worktree
             cache/sources/u-boot
-          key: sources-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
+          key: sources-arm64-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
           restore-keys: |
-            sources-${{ inputs.board }}-
+            sources-arm64-${{ inputs.board }}-
 
       - name: Restore rootfs cache
         if: ${{ !inputs.clear_rootfs_cache }}
