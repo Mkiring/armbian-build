@@ -240,7 +240,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
           path: artifacts/images/*.img.xz
           if-no-files-found: warn
           retention-days: 14
@@ -250,7 +250,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
           path: artifacts/debs/*.deb
           if-no-files-found: warn
           retention-days: 14
@@ -260,7 +260,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manifest-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-manifest-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
           path: |
             artifacts/README.md
             artifacts/logs/
@@ -273,3 +273,41 @@ jobs:
           command -v ccache >/dev/null 2>&1 || { echo "ccache not installed on host"; exit 0; }
           ccache -s 2>/dev/null || true
           du -sh cache/ccache 2>/dev/null || true
+
+  build-extension-debs:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout seeed_armbian_extension fork (deb_source branch)
+        uses: actions/checkout@v4
+        with:
+          repository: Mkiring/seeed_armbian_extension
+          ref: deb_source
+          fetch-depth: 1
+          path: seeed_armbian_extension
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential dpkg-dev debhelper make fakeroot devscripts
+
+      - name: Build all extension debs
+        run: |
+          cd seeed_armbian_extension
+          ./scripts/build-all-debs.sh "$(pwd)/output/debs"
+
+      - name: List produced debs
+        run: |
+          cd seeed_armbian_extension/output/debs
+          ls -lh *.deb 2>/dev/null || { echo "No debs produced"; exit 1; }
+
+      - name: Upload extension debs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Armbian-ext-debs-${{ inputs.extension_ref }}-${{ github.run_id }}
+          path: seeed_armbian_extension/output/debs/*.deb
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
