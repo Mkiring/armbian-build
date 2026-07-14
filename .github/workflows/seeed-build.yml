@@ -63,11 +63,6 @@ on:
         required: true
         type: string
         default: "main"
-      kernel_ref:
-        description: "linux-rockchip kernel ref (branch/tag/commit) on Mkiring fork. Default matches board family."
-        required: false
-        type: string
-        default: ""
       clear_kernel_cache:
         description: "Clear kernel deb/worktree cache before build"
         required: false
@@ -116,35 +111,16 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Resolve kernel ref
-        id: kernel_ref
+      - name: Inject extension fork URL into board config
         run: |
-          ref="${{ inputs.kernel_ref }}"
-          if [ -z "$ref" ]; then
-            case "${{ inputs.board }}" in
-              recomputer-rk3576-devkit) ref="rk-6.1-rkr5.1" ;;
-              recomputer-rk3588-devkit) ref="rk-6.1-rkr5.1" ;;
-              *) ref="rk-6.1-rkr5.1" ;;
-            esac
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Resolved kernel ref: $ref"
-
-      - name: Inject fork URLs into board configs
-        run: |
-          # Replace seeed_armbian_extension source with Mkiring fork
+          # Only the seeed_armbian_extension URL is rewritten to the Mkiring fork.
+          # Kernel (linux-rockchip) is pulled from the official armbian/linux-rockchip
+          # repo; changes go through PRs against upstream, not via CI fork swap.
           sed -i 's|https://github.com/Seeed-Studio/seeed_armbian_extension|https://github.com/Mkiring/seeed_armbian_extension|g' \
               config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
 
-          # Replace linux-rockchip kernel source with Mkiring fork
-          sed -i 's|https://github.com/armbian/linux-rockchip.git|https://github.com/Mkiring/linux-rockchip.git|g' \
-              config/sources/families/seeed-rk3576.conf \
-              config/sources/families/seeed-rk3588.conf \
-              config/sources/families/rk35xx.conf
-
           echo "=== Verifying substitution ==="
-          grep -rn "seeed_armbian_extension" config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -3
-          grep -rn "linux-rockchip" config/sources/families/ 2>/dev/null | grep -E "KERNELSOURCE" | head -5
+          grep -n "seeed_armbian_extension" config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -3
 
       - name: Pre-place seeed_armbian_extension fork
         run: |
@@ -167,9 +143,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/ccache
-          key: ccache-${{ inputs.board }}-vendor-${{ steps.kernel_ref.outputs.ref }}-${{ github.sha }}
+          key: ccache-${{ inputs.board }}-vendor-${{ github.sha }}
           restore-keys: |
-            ccache-${{ inputs.board }}-vendor-${{ steps.kernel_ref.outputs.ref }}-
             ccache-${{ inputs.board }}-vendor-
             ccache-${{ inputs.board }}-
 
@@ -179,9 +154,8 @@ jobs:
           path: |
             cache/sources/linux-kernel-worktree
             cache/sources/u-boot
-          key: sources-${{ inputs.board }}-${{ steps.kernel_ref.outputs.ref }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
+          key: sources-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
           restore-keys: |
-            sources-${{ inputs.board }}-${{ steps.kernel_ref.outputs.ref }}-
             sources-${{ inputs.board }}-
 
       - name: Restore rootfs cache
@@ -240,13 +214,12 @@ jobs:
           {
             echo "## Build artifacts"
             echo ""
-            echo "- Board: \`${{ inputs.board }}\`"
-            echo "- Release: \`${{ inputs.release }}\`"
-            echo "- Desktop: \`${{ inputs.desktop }}\` (\`${{ inputs.tier }}\`)"
-            echo "- Build mode: \`${{ inputs.build_mode }}\`"
-            echo "- Profiles: \`${{ inputs.profiles || 'none' }\`"
-            echo "- Kernel ref: \`${{ steps.kernel_ref.outputs.ref }}\`"
-            echo "- Extension ref: \`${{ inputs.extension_ref }}\`"
+            echo "- Board: ${{ inputs.board }}"
+            echo "- Release: ${{ inputs.release }}"
+            echo "- Desktop: ${{ inputs.desktop }} (${{ inputs.tier }})"
+            echo "- Build mode: ${{ inputs.build_mode }}"
+            echo "- Profiles: ${{ inputs.profiles || 'none' }}"
+            echo "- Extension ref: ${{ inputs.extension_ref }}"
             echo "- Run: ${{ github.run_id }}"
             echo ""
             echo "### Images"
