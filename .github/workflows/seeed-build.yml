@@ -256,15 +256,19 @@ jobs:
           # Stream-compress img via stdout to dodge the chgrp permission error
           # caused by xz trying to clone root ownership from docker-created files.
           # -6 is much faster than -9 with negligible size difference (~5-10%).
+          # After compression, regenerate sha256 against the .img.xz itself so
+          # users can verify the downloaded artifact without unpacking first.
           shopt -s nullglob
           img_filename=""
           for img in output/images/*.img; do
             base="$(basename "$img" .img).img.xz"
             echo "Compressing $img -> artifacts/images/$base"
             xz -T0 -6 -v < "$img" > "artifacts/images/$base"
+            # Generate sha256 of the compressed file (matches what release ships)
+            ( cd artifacts/images && sha256sum "$base" > "$base.sha256" )
             img_filename="$base"
           done
-          # Copy deb packages
+          # Copy deb packages (kept as CI artifact, NOT uploaded to release)
           cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
           # Copy build logs if any
           cp -r output/config-backups/* artifacts/logs/ 2>/dev/null || \
@@ -356,12 +360,6 @@ jobs:
           name: Armbian-img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
           path: release-assets
 
-      - name: Download deb artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: Armbian-deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
-          path: release-assets
-
       - name: List release assets
         run: ls -lh release-assets/
 
@@ -381,6 +379,13 @@ jobs:
             - Extension ref: ${{ inputs.extension_ref }}
 
             Built from CI run ${{ github.run_id }}.
+
+            ## Verify
+
+            ```bash
+            sha256sum -c *.sha256
+            xz -d *.img.xz
+            ```
           files: release-assets/*
           fail_on_unmatched_files: true
           generate_release_notes: false
