@@ -201,17 +201,6 @@ jobs:
             ccache-arm64-${{ inputs.board }}-vendor-
             ccache-arm64-${{ inputs.board }}-
 
-      - name: Restore kernel/u-boot source worktrees
-        if: ${{ !inputs.clear_kernel_cache }}
-        uses: actions/cache@v4
-        with:
-          path: |
-            cache/sources/linux-kernel-worktree
-            cache/sources/u-boot-worktree
-          key: worktree-arm64-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
-          restore-keys: |
-            worktree-arm64-${{ inputs.board }}-
-
       - name: Restore rootfs cache
         if: ${{ !inputs.clear_rootfs_cache }}
         uses: actions/cache@v4
