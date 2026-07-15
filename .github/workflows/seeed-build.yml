@@ -79,7 +79,7 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: "Release tag (auto: v{date}-{board}-{release} if empty)"
+        description: "Release tag (auto: v{YYYYMMDD-HHMM}-{board}-{release} if empty)"
         required: false
         type: string
         default: ""
@@ -338,7 +338,9 @@ jobs:
           if [ -n "${{ inputs.release_tag }}" ]; then
             tag="${{ inputs.release_tag }}"
           else
-            d=$(date -u +%Y%m%d)
+            # Include UTC hour-minute so two builds in the same day don't
+            # collide on the same release tag.
+            d=$(date -u +%Y%m%d-%H%M)
             tag="v${d}-${{ inputs.board }}-${{ inputs.release }}"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
