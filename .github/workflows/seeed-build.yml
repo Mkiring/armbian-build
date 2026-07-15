@@ -73,6 +73,16 @@ on:
         required: false
         type: boolean
         default: false
+      publish_release:
+        description: "Publish a GitHub Release with img.xz + debs after build"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag (auto: v{date}-{board}-{release} if empty)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: seeed-build-${{ github.ref }}-${{ inputs.board }}-${{ inputs.release }}
@@ -84,11 +94,16 @@ env:
   ENABLE_SEEED_RK_EXTENSION: "yes"
   KERNEL_CONFIGURE: "no"
   VENDOR: "Armbian"
+  DOCKER_IMAGE: "ghcr.io/armbian/docker-armbian-build:armbian-ubuntu-noble-latest"
 
 jobs:
   build:
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 600
+
+    outputs:
+      img_filename: ${{ steps.collect.outputs.img_filename }}
+      img_path: ${{ steps.collect.outputs.img_path }}
 
     steps:
       - name: Free up disk space
@@ -139,6 +154,44 @@ jobs:
           ln -sf "$PWD/cache/sources/seeed_armbian_extension/scripts/build.sh" seeed-build.sh
           ls -la seeed-build.sh
 
+      - name: Restore docker image cache
+        uses: actions/cache@v4
+        id: docker_cache
+        with:
+          path: /tmp/armbian-docker-image.tar.zst
+          key: docker-armbian-ubuntu-noble-latest-v1
+        continue-on-error: true
+
+      - name: Load cached docker image
+        if: steps.docker_cache.outputs.cache-hit == 'true'
+        run: |
+          if [ -f /tmp/armbian-docker-image.tar.zst ]; then
+            echo "Loading cached docker image..."
+            zstd -d -T0 /tmp/armbian-docker-image.tar.zst -o /tmp/armbian-docker-image.tar
+            docker load -i /tmp/armbian-docker-image.tar
+            rm -f /tmp/armbian-docker-image.tar
+            docker images | grep armbian
+          fi
+
+      - name: Pull docker image (if not cached)
+        if: steps.docker_cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull ${{ env.DOCKER_IMAGE }}
+          # Save for next run. zstd is faster and smaller than gzip for this workload.
+          docker save ${{ env.DOCKER_IMAGE }} | zstd -19 -T0 -o /tmp/armbian-docker-image.tar.zst
+          ls -lh /tmp/armbian-docker-image.tar.zst
+
+      - name: Restore armbian deb packages cache
+        if: ${{ !inputs.clear_kernel_cache }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            output/debs
+            output/packages-hashed
+          key: debs-arm64-${{ inputs.board }}-vendor-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
+          restore-keys: |
+            debs-arm64-${{ inputs.board }}-vendor-
+
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -148,15 +201,16 @@ jobs:
             ccache-arm64-${{ inputs.board }}-vendor-
             ccache-arm64-${{ inputs.board }}-
 
-      - name: Restore source cache (kernel/u-boot)
+      - name: Restore kernel/u-boot source worktrees
+        if: ${{ !inputs.clear_kernel_cache }}
         uses: actions/cache@v4
         with:
           path: |
             cache/sources/linux-kernel-worktree
-            cache/sources/u-boot
-          key: sources-arm64-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
+            cache/sources/u-boot-worktree
+          key: worktree-arm64-${{ inputs.board }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf') }}
           restore-keys: |
-            sources-arm64-${{ inputs.board }}-
+            worktree-arm64-${{ inputs.board }}-
 
       - name: Restore rootfs cache
         if: ${{ !inputs.clear_rootfs_cache }}
@@ -194,26 +248,30 @@ jobs:
             ${{ inputs.clear_rootfs_cache && '-r' || '' }}
 
       - name: Collect artifacts
+        id: collect
         if: always()
         run: |
           set -euo pipefail
           mkdir -p artifacts/debs artifacts/images artifacts/logs
-          # Compress img via shell redirect. The .img files are created by the
-          # docker build container as root, so xz's default behavior of cloning
-          # source ownership onto the .xz output fails with "Cannot set the file
-          # group: Operation not permitted" on the host. Redirecting through
-          # stdout makes the runner user own the output natively.
+          # Stream-compress img via stdout to dodge the chgrp permission error
+          # caused by xz trying to clone root ownership from docker-created files.
+          # -6 is much faster than -9 with negligible size difference (~5-10%).
           shopt -s nullglob
+          img_filename=""
           for img in output/images/*.img; do
             base="$(basename "$img" .img).img.xz"
             echo "Compressing $img -> artifacts/images/$base"
-            xz -T0 -9 -v < "$img" > "artifacts/images/$base"
+            xz -T0 -6 -v < "$img" > "artifacts/images/$base"
+            img_filename="$base"
           done
           # Copy deb packages
           cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
           # Copy build logs if any
           cp -r output/config-backups/* artifacts/logs/ 2>/dev/null || \
             cp -r .tmp/*.log artifacts/logs/ 2>/dev/null || true
+          # Expose filename for the release job
+          echo "img_filename=$img_filename" >> "$GITHUB_OUTPUT"
+          echo "img_path=artifacts/images/$img_filename" >> "$GITHUB_OUTPUT"
           # Manifest
           {
             echo "## Build artifacts"
@@ -234,7 +292,6 @@ jobs:
             ! compgen -G "artifacts/debs/*.deb" > /dev/null 2>&1 || \
               ls -lh artifacts/debs/ | tail -n +2
           } > artifacts/README.md
-          # Print summary to CI output
           cat artifacts/README.md
 
       - name: Upload images
@@ -271,44 +328,59 @@ jobs:
       - name: Print ccache stats
         if: always()
         run: |
-          command -v ccache >/dev/null 2>&1 || { echo "ccache not installed on host"; exit 0; }
+          command -v ccache >/dev/null 2>&1 || { echo "ccache not installed on host; install with: sudo apt-get install -y ccache"; exit 0; }
           ccache -s 2>/dev/null || true
           du -sh cache/ccache 2>/dev/null || true
 
-  build-extension-debs:
+  release:
+    needs: build
+    if: ${{ always() && inputs.publish_release && needs.build.result == 'success' }}
     runs-on: ubuntu-26.04-arm
-    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
-      - name: Checkout seeed_armbian_extension fork (deb_source branch)
-        uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            d=$(date -u +%Y%m%d)
+            tag="v${d}-${{ inputs.board }}-${{ inputs.release }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
         with:
-          repository: Mkiring/seeed_armbian_extension
-          ref: deb_source
-          fetch-depth: 1
-          path: seeed_armbian_extension
+          name: Armbian-img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          path: release-assets
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-              build-essential dpkg-dev debhelper make fakeroot devscripts
-
-      - name: Build all extension debs
-        run: |
-          cd seeed_armbian_extension
-          ./scripts/build-all-debs.sh "$(pwd)/output/debs"
-
-      - name: List produced debs
-        run: |
-          cd seeed_armbian_extension/output/debs
-          ls -lh *.deb 2>/dev/null || { echo "No debs produced"; exit 1; }
-
-      - name: Upload extension debs
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Download deb artifact
+        uses: actions/download-artifact@v4
         with:
-          name: Armbian-ext-debs-${{ inputs.extension_ref }}-${{ github.run_id }}
-          path: seeed_armbian_extension/output/debs/*.deb
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 0
+          name: Armbian-deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          path: release-assets
+
+      - name: List release assets
+        run: ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body: |
+            ## Armbian image for ${{ inputs.board }}
+
+            - Board: ${{ inputs.board }}
+            - Release: ${{ inputs.release }}
+            - Desktop: ${{ inputs.desktop }} (${{ inputs.tier }})
+            - Build mode: ${{ inputs.build_mode }}
+            - Profiles: ${{ inputs.profiles || 'none' }}
+            - Extension ref: ${{ inputs.extension_ref }}
+
+            Built from CI run ${{ github.run_id }}.
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
