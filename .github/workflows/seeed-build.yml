@@ -234,7 +234,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        # plan emits a dict like {"include": [...entries...]}, so we
+        # pull the .include out — without it the field becomes
+        # include: {"include": [...]}, which silently skips the job.
+        include: ${{ fromJSON(needs.plan.outputs.matrix).include }}
 
     steps:
       - name: Free up disk space
