@@ -392,16 +392,40 @@ jobs:
             ${{ inputs.clear_kernel_cache && '-c' || '' }} \
             ${{ inputs.clear_rootfs_cache && '-r' || '' }}
 
+      - name: Compress .img to .img.xz (GitHub Release caps single asset at 2 GiB)
+        if: always()
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # armbian emits .img files around 5-6 GiB; GitHub Release
+          # rejects any single asset over 2 GiB. Compress in place so
+          # the artifact shipped to release fits.
+          # Stream-compress via stdout to dodge the chgrp permission
+          # error caused by xz trying to clone ownership from
+          # docker-created files.
+          # -6 is much faster than -9 with ~5-10% size difference.
+          for img in output/images/*.img; do
+            base="$(basename "$img" .img).img.xz"
+            echo "Compressing $img -> output/images/$base"
+            xz -T0 -6 -v < "$img" > "output/images/$base"
+            # Generate sha256 of the compressed file (matches what
+            # release ships); keep armbian's own .img.sha too so
+            # users can verify after `xz -d` against the unpacked img.
+            ( cd output/images && sha256sum "$base" > "$base.sha256" )
+            echo "Removing uncompressed $img"
+            rm -f "$img"
+          done
+          echo "=== output/images/ contents ==="
+          ls -lh output/images/
+
       - name: Upload output/images/ as-is
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Armbian-img-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
-          # Publish armbian's raw output verbatim — no xz compression,
-          # no sha256 regen, no rename. armbian already emits .img,
-          # .img.sha, .img.txt, -OTA.checksums, _RECOVERY_OTA.tar.gz,
-          # _AB_OTA.tar.gz, etc. into output/images/, and we ship them
-          # all to the release unchanged.
+          # Ship armbian's raw output plus the .img.xz we added to
+          # satisfy GitHub's 2 GiB asset cap. Original .img is removed
+          # after compression to keep the artifact small.
           path: output/images/
           if-no-files-found: error
           retention-days: 14
