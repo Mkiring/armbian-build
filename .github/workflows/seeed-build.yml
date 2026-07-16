@@ -3,26 +3,71 @@ name: Seeed Build
 on:
   workflow_dispatch:
     inputs:
-      boards:
-        description: "Boards (space-separated): recomputer-rk3576-devkit recomputer-rk3588-devkit"
-        required: true
-        type: string
-        default: "recomputer-rk3576-devkit"
-      releases:
-        description: "Releases (space-separated). Debian: trixie bookworm bullseye buster sid forky resolute. Ubuntu: plucky oracular noble jammy focal questing"
-        required: true
-        type: string
-        default: "trixie"
-      tiers:
-        description: "Tiers (space-separated): cli minimal mid full. 'cli' = no desktop (build.sh --minimal); others use -d desktop"
-        required: true
-        type: string
-        default: "mid"
-      ota_modes:
-        description: "OTA modes (space-separated): recovery ab. Each becomes a separate matrix entry (one image per OTA mode). No 'none' — leave empty == no OTA in each entry (build a plain image)."
-        required: false
-        type: string
-        default: ""
+      # ── Boards (multi-select via checkboxes) ─────────────────────────
+      board_rk3576:
+        description: "Board: reComputer rk3576 DevKit"
+        type: boolean
+        default: true
+      board_rk3588:
+        description: "Board: reComputer rk3588 DevKit"
+        type: boolean
+        default: false
+
+      # ── Releases ──────────────────────────────────────────────────────
+      release_bookworm:
+        description: "Release: Debian 12 (bookworm)"
+        type: boolean
+        default: false
+      release_trixie:
+        description: "Release: Debian 13 (trixie)"
+        type: boolean
+        default: true
+      release_jammy:
+        description: "Release: Ubuntu 22.04 (jammy)"
+        type: boolean
+        default: false
+      release_noble:
+        description: "Release: Ubuntu 24.04 (noble)"
+        type: boolean
+        default: false
+      release_plucky:
+        description: "Release: Ubuntu 26.04 (plucky)"
+        type: boolean
+        default: false
+
+      # ── Tiers ─────────────────────────────────────────────────────────
+      tier_cli:
+        description: "Tier: cli (no desktop, build.sh --minimal)"
+        type: boolean
+        default: false
+      tier_minimal:
+        description: "Tier: minimal desktop"
+        type: boolean
+        default: false
+      tier_mid:
+        description: "Tier: mid desktop"
+        type: boolean
+        default: true
+      tier_full:
+        description: "Tier: full desktop"
+        type: boolean
+        default: false
+
+      # ── OTA modes (each selected mode becomes a separate matrix entry) ──
+      ota_plain:
+        description: "OTA: none (plain image, no recovery/ab framework)"
+        type: boolean
+        default: false
+      ota_recovery:
+        description: "OTA: recovery"
+        type: boolean
+        default: false
+      ota_ab:
+        description: "OTA: A/B dual-partition"
+        type: boolean
+        default: false
+
+      # ── Other options ─────────────────────────────────────────────────
       desktop:
         description: "Desktop environment (used only when tier != cli)"
         required: true
@@ -91,48 +136,56 @@ jobs:
       boards: ${{ steps.gen.outputs.boards }}
       count: ${{ steps.gen.outputs.count }}
     steps:
-      - name: Generate matrix JSON from multi-select inputs
+      - name: Generate matrix JSON from checkbox inputs
         id: gen
         run: |
           set -euo pipefail
           python3 <<'PY'
           import json, os, itertools
 
-          def parse(s):
-              return [x for x in (s or "").replace(",", " ").split() if x]
+          def flag(name):
+              v = os.environ.get(name, "false").strip().lower()
+              return v in ("true", "1", "yes", "on")
 
-          boards = parse(os.environ["BOARDS"])
-          releases = parse(os.environ["RELEASES"])
-          tiers = parse(os.environ["TIERS"])
-          ota = parse(os.environ["OTA"])
+          # Boards
+          boards = []
+          if flag("BOARD_RK3576"): boards.append("recomputer-rk3576-devkit")
+          if flag("BOARD_RK3588"): boards.append("recomputer-rk3588-devkit")
 
-          if not boards:   raise SystemExit("boards is empty")
-          if not releases: raise SystemExit("releases is empty")
-          if not tiers:    raise SystemExit("tiers is empty")
+          # Releases
+          releases = []
+          if flag("REL_BOOKWORM"): releases.append("bookworm")
+          if flag("REL_TRIXIE"):   releases.append("trixie")
+          if flag("REL_JAMMY"):    releases.append("jammy")
+          if flag("REL_NOBLE"):    releases.append("noble")
+          if flag("REL_PLUCKY"):   releases.append("plucky")
 
-          # Normalize tier 'cli' -> build.sh --minimal mode (no desktop).
-          # If ota list is empty, still emit one entry per (board, release, tier)
-          # with profiles="" — that's the "no OTA" plain image.
-          if not ota:
-              ota = [""]  # single empty profile = plain image, no recovery/ab
+          # Tiers
+          tiers = []
+          if flag("TIER_CLI"):     tiers.append("cli")
+          if flag("TIER_MINIMAL"):tiers.append("minimal")
+          if flag("TIER_MID"):     tiers.append("mid")
+          if flag("TIER_FULL"):    tiers.append("full")
 
-          valid_boards = {"recomputer-rk3576-devkit", "recomputer-rk3588-devkit"}
-          for b in boards:
-              if b not in valid_boards:
-                  raise SystemExit(f"unknown board '{b}'; valid: {sorted(valid_boards)}")
+          # OTA modes. Each selected mode becomes its own matrix entry.
+          # If none selected, fall back to a single plain entry per
+          # (board, release, tier) so the matrix still produces a build.
+          otas = []
+          if flag("OTA_PLAIN"):    otas.append("")
+          if flag("OTA_RECOVERY"): otas.append("recovery")
+          if flag("OTA_AB"):       otas.append("ab")
+          if not otas:
+              otas = [""]  # plain image when no OTA box is checked
 
-          valid_tiers = {"cli", "minimal", "mid", "full"}
-          for t in tiers:
-              if t not in valid_tiers:
-                  raise SystemExit(f"unknown tier '{t}'; valid: {sorted(valid_tiers)}")
-
-          valid_ota = {"", "recovery", "ab"}
-          for m in ota:
-              if m not in valid_ota:
-                  raise SystemExit(f"unknown ota mode '{m}'; valid: recovery, ab (empty=none)")
+          errs = []
+          if not boards:   errs.append("select at least one board")
+          if not releases: errs.append("select at least one release")
+          if not tiers:    errs.append("select at least one tier")
+          if errs:
+              raise SystemExit("ERROR: " + "; ".join(errs))
 
           entries = []
-          for (b, r, t, p) in itertools.product(boards, releases, tiers, ota):
+          for (b, r, t, p) in itertools.product(boards, releases, tiers, otas):
               entries.append({
                   "board": b,
                   "release": r,
@@ -146,7 +199,6 @@ jobs:
               print(f"  board={e['board']:<28} release={e['release']:<10} tier={e['tier']:<8} profile={e['profile'] or '(none)'}")
           print("::endgroup::")
 
-          # boards list for release job matrix
           boards_unique = list(dict.fromkeys(boards))
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -155,10 +207,20 @@ jobs:
               f.write(f"count={len(entries)}\n")
           PY
         env:
-          BOARDS: ${{ inputs.boards }}
-          RELEASES: ${{ inputs.releases }}
-          TIERS: ${{ inputs.tiers }}
-          OTA: ${{ inputs.ota_modes }}
+          BOARD_RK3576: ${{ inputs.board_rk3576 }}
+          BOARD_RK3588: ${{ inputs.board_rk3588 }}
+          REL_BOOKWORM: ${{ inputs.release_bookworm }}
+          REL_TRIXIE:   ${{ inputs.release_trixie }}
+          REL_JAMMY:    ${{ inputs.release_jammy }}
+          REL_NOBLE:    ${{ inputs.release_noble }}
+          REL_PLUCKY:   ${{ inputs.release_plucky }}
+          TIER_CLI:     ${{ inputs.tier_cli }}
+          TIER_MINIMAL: ${{ inputs.tier_minimal }}
+          TIER_MID:     ${{ inputs.tier_mid }}
+          TIER_FULL:    ${{ inputs.tier_full }}
+          OTA_PLAIN:    ${{ inputs.ota_plain }}
+          OTA_RECOVERY: ${{ inputs.ota_recovery }}
+          OTA_AB:       ${{ inputs.ota_ab }}
 
       - name: Print summary
         run: |
