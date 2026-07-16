@@ -257,47 +257,6 @@ jobs:
             ${{ inputs.clear_kernel_cache && '-c' || '' }} \
             ${{ inputs.clear_rootfs_cache && '-r' || '' }}
 
-      - name: Diagnose disk space (on failure)
-        if: failure()
-        run: |
-          set +e
-          echo "===== df -h (runner overall) ====="
-          df -h
-          echo
-          echo "===== df -h /tmp (where docker image tar lives) ====="
-          df -h /tmp
-          echo
-          echo "===== Inode usage ====="
-          df -i | head -20
-          echo
-          echo "===== du -sh cache/* (armbian caches) ====="
-          du -sh cache/* 2>/dev/null | sort -h
-          echo
-          echo "===== du -sh output/* (build outputs) ====="
-          du -sh output/* 2>/dev/null | sort -h
-          echo
-          echo "===== du -sh .tmp/* (build tmp) ====="
-          du -sh .tmp/* 2>/dev/null | sort -h | tail -20
-          echo
-          echo "===== du -sh /armbian mount targets if any ====="
-          du -sh /armbian* 2>/dev/null
-          echo
-          echo "===== Loop devices ====="
-          losetup -a 2>/dev/null
-          echo
-          echo "===== Mounts involving armbian/loop/mount- ====="
-          mount | grep -E 'armbian|loop|mount-' | head -20
-          echo
-          echo "===== Loop partitions (p1/p2/...) ====="
-          lsblk 2>/dev/null
-          echo
-          echo "===== Relevant env vars seen by build ====="
-          env | grep -E 'ROOTFS|AB_|FIXED_IMAGE|BOOTSIZE|UEFISIZE|USERDATA|OFFSET|EXTRA_' | sort
-          echo
-          echo "===== Last 80 lines of armbian log (image creation section) ====="
-          tail -n 80 output/logs/log-build-*.log 2>/dev/null | tail -n 80
-          exit 0
-
       - name: Collect artifacts
         id: collect
         if: always()
