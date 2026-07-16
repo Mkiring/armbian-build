@@ -323,83 +323,20 @@ jobs:
             ${{ inputs.clear_kernel_cache && '-c' || '' }} \
             ${{ inputs.clear_rootfs_cache && '-r' || '' }}
 
-      - name: Collect artifacts
-        id: collect
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/debs artifacts/images artifacts/logs
-          # Stream-compress img via stdout to dodge the chgrp permission error
-          # caused by xz trying to clone root ownership from docker-created files.
-          # -6 is much faster than -9 with negligible size difference (~5-10%).
-          # After compression, regenerate sha256 against the .img.xz itself so
-          # users can verify the downloaded artifact without unpacking first.
-          shopt -s nullglob
-          img_filename=""
-          for img in output/images/*.img; do
-            base="$(basename "$img" .img).img.xz"
-            echo "Compressing $img -> artifacts/images/$base"
-            xz -T0 -6 -v < "$img" > "artifacts/images/$base"
-            ( cd artifacts/images && sha256sum "$base" > "$base.sha256" )
-            img_filename="$base"
-          done
-          cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
-          cp -r output/config-backups/* artifacts/logs/ 2>/dev/null || \
-            cp -r .tmp/*.log artifacts/logs/ 2>/dev/null || true
-          echo "img_filename=$img_filename" >> "$GITHUB_OUTPUT"
-          # Manifest
-          {
-            echo "## Build artifacts"
-            echo ""
-            echo "- Board: ${{ matrix.board }}"
-            echo "- Release: ${{ matrix.release }}"
-            echo "- Tier: ${{ matrix.tier }}"
-            echo "- Desktop: ${{ (matrix.tier == 'cli' && 'none') || format('{0} ({1})', inputs.desktop, matrix.tier) }}"
-            echo "- Build mode: ${{ inputs.build_mode }}"
-            echo "- Profiles: ${{ matrix.profile || 'none' }}"
-            echo "- Extension ref: ${{ inputs.extension_ref }}"
-            echo "- Run: ${{ github.run_id }}"
-            echo ""
-            echo "### Images"
-            ! compgen -G "artifacts/images/*.img.xz" > /dev/null 2>&1 || \
-              ls -lh artifacts/images/ | tail -n +2
-            echo ""
-            echo "### Debs"
-            ! compgen -G "artifacts/debs/*.deb" > /dev/null 2>&1 || \
-              ls -lh artifacts/debs/ | tail -n +2
-          } > artifacts/README.md
-          cat artifacts/README.md
-
-      - name: Upload images
+      - name: Upload output/images/ as-is
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Armbian-img-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
-          path: artifacts/images/*.img.xz
-          if-no-files-found: warn
+          # Publish armbian's raw output verbatim — no xz compression,
+          # no sha256 regen, no rename. armbian already emits .img,
+          # .img.sha, .img.txt, -OTA.checksums, _RECOVERY_OTA.tar.gz,
+          # _AB_OTA.tar.gz, etc. into output/images/, and we ship them
+          # all to the release unchanged.
+          path: output/images/
+          if-no-files-found: error
           retention-days: 14
           compression-level: 0
-
-      - name: Upload debs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Armbian-deb-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
-          path: artifacts/debs/*.deb
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 0
-
-      - name: Upload manifest and logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Armbian-manifest-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
-          path: |
-            artifacts/README.md
-            artifacts/logs/
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Print ccache stats
         if: always()
@@ -439,11 +376,44 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: Armbian-img-${{ steps.tag.outputs.short_board }}-*
-          merge-multiple: true
+          # merge-multiple=false keeps each matrix entry in its own
+          # subdirectory (named after the artifact). Armbian emits
+          # identical base filenames across OTA modes (e.g. both
+          # recovery and ab produce Armbian_..._trixie_..._gnome_desktop.img),
+          # so flattening would silently overwrite. Each subdir keeps
+          # its files isolated; release uploads them all (basename
+          # uniqueness is enforced by the ota_label in the artifact
+          # name propagating as the subdir name when duplicates appear).
+          merge-multiple: false
           path: release-assets
 
+      - name: Flatten release assets (preserve duplicates via subdir prefix)
+        run: |
+          set -euo pipefail
+          # download-artifact v4 with merge-multiple=false creates one
+          # subdir per artifact, named after the artifact. Inside each,
+          # armbian's raw filenames live. Move every file up one level
+          # into release-assets/, prefixing with the parent subdir name
+          # when the destination already exists — that way ab/recovery
+          # images with identical armbian-generated basenames both
+          # survive in the flat release folder.
+          mkdir -p release-flat
+          find release-assets -mindepth 2 -type f | while IFS= read -r f; do
+            base=$(basename "$f")
+            parent=$(basename "$(dirname "$f")")
+            target="release-flat/$base"
+            if [ -e "$target" ]; then
+              target="release-flat/${parent}__${base}"
+            fi
+            mv "$f" "$target"
+          done
+          rm -rf release-assets
+          mv release-flat release-assets
+          echo "=== Final release assets ==="
+          ls -lh release-assets/
+
       - name: List release assets
-        run: ls -lh release-assets/
+        run: find release-assets/ -type f -printf '%f\n' | sort
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -453,14 +423,15 @@ jobs:
           body: |
             ## Armbian images for ${{ matrix.board }}
 
-            Matrix artifacts grouped from CI run ${{ github.run_id }}.
-            Each `.img.xz` pairs with a `.sha256` for verification.
+            Built from CI run ${{ github.run_id }}.
+            Files are armbian's raw `output/images/` output — no
+            compression, no rename. See each file's paired `.sha` /
+            `-OTA.checksums` for integrity data.
 
             ## Verify
 
             ```bash
-            sha256sum -c *.sha256
-            xz -d *.img.xz
+            sha256sum -c *.img.sha
             ```
           files: release-assets/*
           fail_on_unmatched_files: true
