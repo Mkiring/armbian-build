@@ -3,35 +3,28 @@ name: Seeed Build
 on:
   workflow_dispatch:
     inputs:
-      board:
-        description: "Board name"
+      boards:
+        description: "Boards (space-separated): recomputer-rk3576-devkit recomputer-rk3588-devkit"
         required: true
-        type: choice
-        options:
-          - recomputer-rk3576-devkit
-          - recomputer-rk3588-devkit
-        default: recomputer-rk3576-devkit
-      release:
-        description: "Release/distro (e.g. trixie, bookworm, noble, jammy)"
+        type: string
+        default: "recomputer-rk3576-devkit"
+      releases:
+        description: "Releases (space-separated). Debian: trixie bookworm bullseye buster sid forky resolute. Ubuntu: plucky oracular noble jammy focal questing"
         required: true
-        type: choice
-        options:
-          - trixie
-          - bookworm
-          - bullseye
-          - buster
-          - sid
-          - forky
-          - resolute
-          - plucky
-          - oracular
-          - noble
-          - jammy
-          - focal
-          - questing
-        default: trixie
+        type: string
+        default: "trixie"
+      tiers:
+        description: "Tiers (space-separated): cli minimal mid full. 'cli' = no desktop (build.sh --minimal); others use -d desktop"
+        required: true
+        type: string
+        default: "mid"
+      ota_modes:
+        description: "OTA modes (space-separated): recovery ab. Each becomes a separate matrix entry (one image per OTA mode). No 'none' — leave empty == no OTA in each entry (build a plain image)."
+        required: false
+        type: string
+        default: ""
       desktop:
-        description: "Desktop environment"
+        description: "Desktop environment (used only when tier != cli)"
         required: true
         type: choice
         options:
@@ -41,15 +34,6 @@ on:
           - mate
           - cinnamon
         default: gnome
-      tier:
-        description: "Desktop tier"
-        required: true
-        type: choice
-        options:
-          - minimal
-          - mid
-          - full
-        default: mid
       build_mode:
         description: "Build mode (full = kernel+uboot+rootfs+image)"
         required: true
@@ -60,11 +44,6 @@ on:
           - uboot
           - minimal
         default: full
-      profiles:
-        description: "Feature profiles, space-separated (recovery ab secure-boot optee). Leave empty for plain desktop build."
-        required: false
-        type: string
-        default: ""
       extension_ref:
         description: "seeed_armbian_extension ref (branch/tag/commit) on Mkiring fork"
         required: true
@@ -81,18 +60,19 @@ on:
         type: boolean
         default: false
       publish_release:
-        description: "Publish a GitHub Release with img.xz + debs after build"
+        description: "Publish a GitHub Release per board (one release per board, all matrix artifacts grouped)"
         required: false
         type: boolean
         default: false
-      release_tag:
-        description: "Release tag (auto: v{YYYYMMDD-HHMM}-{board}-{release} if empty)"
+      release_tag_suffix:
+        description: "Release tag suffix (auto: v{YYYYMMDD-HHMM}-{board} if empty)"
         required: false
         type: string
         default: ""
 
 concurrency:
-  group: seeed-build-${{ github.ref }}-${{ inputs.board }}-${{ inputs.release }}
+  # Whole matrix is one concurrency group — two dispatches don't overlap.
+  group: seeed-build-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: false
 
 env:
@@ -104,13 +84,95 @@ env:
   DOCKER_IMAGE: "ghcr.io/armbian/docker-armbian-build:armbian-ubuntu-noble-latest"
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      boards: ${{ steps.gen.outputs.boards }}
+      count: ${{ steps.gen.outputs.count }}
+    steps:
+      - name: Generate matrix JSON from multi-select inputs
+        id: gen
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json, os, itertools
+
+          def parse(s):
+              return [x for x in (s or "").replace(",", " ").split() if x]
+
+          boards = parse(os.environ["BOARDS"])
+          releases = parse(os.environ["RELEASES"])
+          tiers = parse(os.environ["TIERS"])
+          ota = parse(os.environ["OTA"])
+
+          if not boards:   raise SystemExit("boards is empty")
+          if not releases: raise SystemExit("releases is empty")
+          if not tiers:    raise SystemExit("tiers is empty")
+
+          # Normalize tier 'cli' -> build.sh --minimal mode (no desktop).
+          # If ota list is empty, still emit one entry per (board, release, tier)
+          # with profiles="" — that's the "no OTA" plain image.
+          if not ota:
+              ota = [""]  # single empty profile = plain image, no recovery/ab
+
+          valid_boards = {"recomputer-rk3576-devkit", "recomputer-rk3588-devkit"}
+          for b in boards:
+              if b not in valid_boards:
+                  raise SystemExit(f"unknown board '{b}'; valid: {sorted(valid_boards)}")
+
+          valid_tiers = {"cli", "minimal", "mid", "full"}
+          for t in tiers:
+              if t not in valid_tiers:
+                  raise SystemExit(f"unknown tier '{t}'; valid: {sorted(valid_tiers)}")
+
+          valid_ota = {"", "recovery", "ab"}
+          for m in ota:
+              if m not in valid_ota:
+                  raise SystemExit(f"unknown ota mode '{m}'; valid: recovery, ab (empty=none)")
+
+          entries = []
+          for (b, r, t, p) in itertools.product(boards, releases, tiers, ota):
+              entries.append({
+                  "board": b,
+                  "release": r,
+                  "tier": t,
+                  "profile": p,
+                  "is_cli": 1 if t == "cli" else 0,
+              })
+
+          print(f"::group::Matrix entries ({len(entries)})")
+          for e in entries:
+              print(f"  board={e['board']:<28} release={e['release']:<10} tier={e['tier']:<8} profile={e['profile'] or '(none)'}")
+          print("::endgroup::")
+
+          # boards list for release job matrix
+          boards_unique = list(dict.fromkeys(boards))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={json.dumps({'include': entries})}\n")
+              f.write(f"boards={json.dumps(boards_unique)}\n")
+              f.write(f"count={len(entries)}\n")
+          PY
+        env:
+          BOARDS: ${{ inputs.boards }}
+          RELEASES: ${{ inputs.releases }}
+          TIERS: ${{ inputs.tiers }}
+          OTA: ${{ inputs.ota_modes }}
+
+      - name: Print summary
+        run: |
+          echo "Total matrix entries: ${{ steps.gen.outputs.count }}"
+          echo "Boards to release: ${{ steps.gen.outputs.boards }}"
+
   build:
+    needs: plan
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 600
-
-    outputs:
-      img_filename: ${{ steps.collect.outputs.img_filename }}
-      img_path: ${{ steps.collect.outputs.img_path }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Free up disk space
@@ -127,6 +189,16 @@ jobs:
           docker system prune -af --volumes || true
           echo "Disk space after cleanup:"
           df -h /
+
+      - name: Resolve matrix labels
+        id: lbl
+        run: |
+          # Short board name for labels/artifacts (recomputer-rk3576-devkit -> rk3576)
+          short=$(echo "${{ matrix.board }}" | sed -E 's/recomputer-//; s/-devkit//')
+          ota="${{ matrix.profile }}"
+          [ -z "$ota" ] && ota="plain"
+          echo "short_board=$short" >> "$GITHUB_OUTPUT"
+          echo "ota_label=$ota" >> "$GITHUB_OUTPUT"
 
       - name: Checkout armbian-build (this fork)
         uses: actions/checkout@v4
@@ -195,28 +267,29 @@ jobs:
           path: |
             output/debs
             output/packages-hashed
-          key: debs-arm64-${{ inputs.board }}-vendor-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
+          key: debs-arm64-${{ matrix.board }}-vendor-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
           restore-keys: |
-            debs-arm64-${{ inputs.board }}-vendor-
+            debs-arm64-${{ matrix.board }}-vendor-
 
       - name: Restore ccache
         uses: actions/cache@v4
         with:
           path: cache/ccache
-          key: ccache-arm64-${{ inputs.board }}-vendor-${{ github.sha }}
+          key: ccache-arm64-${{ matrix.board }}-vendor-${{ github.sha }}
           restore-keys: |
-            ccache-arm64-${{ inputs.board }}-vendor-
-            ccache-arm64-${{ inputs.board }}-
+            ccache-arm64-${{ matrix.board }}-vendor-
+            ccache-arm64-${{ matrix.board }}-
 
       - name: Restore rootfs cache
         if: ${{ !inputs.clear_rootfs_cache }}
         uses: actions/cache@v4
         with:
           path: cache/rootfs
-          key: rootfs-${{ inputs.release }}-${{ inputs.tier }}-${{ inputs.desktop }}-${{ hashFiles('config/sources/**/*.inc') }}
+          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ hashFiles('config/sources/**/*.inc') }}
           restore-keys: |
-            rootfs-${{ inputs.release }}-${{ inputs.tier }}-${{ inputs.desktop }}-
-            rootfs-${{ inputs.release }}-
+            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-
+            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-
+            rootfs-${{ matrix.release }}-
 
       - name: Build
         run: |
@@ -229,17 +302,24 @@ jobs:
             full)    MODE_ARGS="" ;;
           esac
 
+          # 'cli' tier -> build.sh --minimal (no desktop, BUILD_MINIMAL=yes)
+          TIER_ARGS=""
+          if [[ "${{ matrix.tier }}" == "cli" ]]; then
+              TIER_ARGS="--minimal"
+          else
+              TIER_ARGS="-d \"${{ inputs.desktop }}\" -t \"${{ matrix.tier }}\""
+          fi
+
           # Passphrase for encrypted profiles; not a real secret in CI test.
           export CRYPTROOT_PASSPHRASE="${{ secrets.CRYPTROOT_PASSPHRASE || 'armbian-ci-test' }}"
 
           # shellcheck disable=SC2086
           ./seeed-build.sh \
             $MODE_ARGS \
-            ${{ inputs.profiles }} \
-            -b "${{ inputs.board }}" \
-            -R "${{ inputs.release }}" \
-            -d "${{ inputs.desktop }}" \
-            -t "${{ inputs.tier }}" \
+            ${{ matrix.profile }} \
+            -b "${{ matrix.board }}" \
+            -R "${{ matrix.release }}" \
+            $TIER_ARGS \
             ${{ inputs.clear_kernel_cache && '-c' || '' }} \
             ${{ inputs.clear_rootfs_cache && '-r' || '' }}
 
@@ -260,27 +340,23 @@ jobs:
             base="$(basename "$img" .img).img.xz"
             echo "Compressing $img -> artifacts/images/$base"
             xz -T0 -6 -v < "$img" > "artifacts/images/$base"
-            # Generate sha256 of the compressed file (matches what release ships)
             ( cd artifacts/images && sha256sum "$base" > "$base.sha256" )
             img_filename="$base"
           done
-          # Copy deb packages (kept as CI artifact, NOT uploaded to release)
           cp output/debs/*.deb artifacts/debs/ 2>/dev/null || true
-          # Copy build logs if any
           cp -r output/config-backups/* artifacts/logs/ 2>/dev/null || \
             cp -r .tmp/*.log artifacts/logs/ 2>/dev/null || true
-          # Expose filename for the release job
           echo "img_filename=$img_filename" >> "$GITHUB_OUTPUT"
-          echo "img_path=artifacts/images/$img_filename" >> "$GITHUB_OUTPUT"
           # Manifest
           {
             echo "## Build artifacts"
             echo ""
-            echo "- Board: ${{ inputs.board }}"
-            echo "- Release: ${{ inputs.release }}"
-            echo "- Desktop: ${{ inputs.desktop }} (${{ inputs.tier }})"
+            echo "- Board: ${{ matrix.board }}"
+            echo "- Release: ${{ matrix.release }}"
+            echo "- Tier: ${{ matrix.tier }}"
+            echo "- Desktop: ${{ (matrix.tier == 'cli' && 'none') || format('{0} ({1})', inputs.desktop, matrix.tier) }}"
             echo "- Build mode: ${{ inputs.build_mode }}"
-            echo "- Profiles: ${{ inputs.profiles || 'none' }}"
+            echo "- Profiles: ${{ matrix.profile || 'none' }}"
             echo "- Extension ref: ${{ inputs.extension_ref }}"
             echo "- Run: ${{ github.run_id }}"
             echo ""
@@ -298,7 +374,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Armbian-img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-img-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
           path: artifacts/images/*.img.xz
           if-no-files-found: warn
           retention-days: 14
@@ -308,7 +384,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Armbian-deb-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-deb-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
           path: artifacts/debs/*.deb
           if-no-files-found: warn
           retention-days: 14
@@ -318,7 +394,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Armbian-manifest-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          name: Armbian-manifest-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
           path: |
             artifacts/README.md
             artifacts/logs/
@@ -333,29 +409,37 @@ jobs:
           du -sh cache/ccache 2>/dev/null || true
 
   release:
-    needs: build
-    if: ${{ always() && inputs.publish_release && needs.build.result == 'success' }}
+    needs: [plan, build]
+    if: ${{ always() && inputs.publish_release && !cancelled() }}
     runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJSON(needs.plan.outputs.boards) }}
+
     steps:
-      - name: Resolve tag
+      - name: Resolve short board name and tag
         id: tag
         run: |
-          if [ -n "${{ inputs.release_tag }}" ]; then
-            tag="${{ inputs.release_tag }}"
+          short=$(echo "${{ matrix.board }}" | sed -E 's/recomputer-//; s/-devkit//')
+          echo "short_board=$short" >> "$GITHUB_OUTPUT"
+          suffix="${{ inputs.release_tag_suffix }}"
+          if [ -n "$suffix" ]; then
+            tag="v${suffix}-${short}"
           else
-            # Include UTC hour-minute so two builds in the same day don't
-            # collide on the same release tag.
             d=$(date -u +%Y%m%d-%H%M)
-            tag="v${d}-${{ inputs.board }}-${{ inputs.release }}"
+            tag="v${d}-${short}"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Download image artifact
+      - name: Download all image artifacts for this board
         uses: actions/download-artifact@v4
         with:
-          name: Armbian-img-${{ inputs.board }}-${{ inputs.release }}-${{ github.run_id }}
+          pattern: Armbian-img-${{ steps.tag.outputs.short_board }}-*
+          merge-multiple: true
           path: release-assets
 
       - name: List release assets
@@ -367,16 +451,10 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           body: |
-            ## Armbian image for ${{ inputs.board }}
+            ## Armbian images for ${{ matrix.board }}
 
-            - Board: ${{ inputs.board }}
-            - Release: ${{ inputs.release }}
-            - Desktop: ${{ inputs.desktop }} (${{ inputs.tier }})
-            - Build mode: ${{ inputs.build_mode }}
-            - Profiles: ${{ inputs.profiles || 'none' }}
-            - Extension ref: ${{ inputs.extension_ref }}
-
-            Built from CI run ${{ github.run_id }}.
+            Matrix artifacts grouped from CI run ${{ github.run_id }}.
+            Each `.img.xz` pairs with a `.sha256` for verification.
 
             ## Verify
 
