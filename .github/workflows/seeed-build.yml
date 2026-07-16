@@ -364,12 +364,16 @@ jobs:
             full)    MODE_ARGS="" ;;
           esac
 
-          # 'cli' tier -> build.sh --minimal (no desktop, BUILD_MINIMAL=yes)
+          # 'cli' tier -> build.sh --minimal (no desktop, BUILD_MINIMAL=yes).
+          # Other tiers use -d <desktop> -t <tier>. Desktop names are simple
+          # identifiers (gnome, xfce, kde-plasma, mate, cinnamon) — no
+          # quoting needed, and quoting here would embed literal " in the
+          # value, which build.sh's validate_option rejects.
           TIER_ARGS=""
           if [[ "${{ matrix.tier }}" == "cli" ]]; then
               TIER_ARGS="--minimal"
           else
-              TIER_ARGS="-d \"${{ inputs.desktop }}\" -t \"${{ matrix.tier }}\""
+              TIER_ARGS="-d ${{ inputs.desktop }} -t ${{ matrix.tier }}"
           fi
 
           # Passphrase for encrypted profiles; not a real secret in CI test.
@@ -409,7 +413,12 @@ jobs:
 
   release:
     needs: [plan, build]
-    if: ${{ always() && inputs.publish_release && !cancelled() }}
+    # Run only when publish_release is checked, the dispatch wasn't
+    # cancelled, and build produced at least some artifacts (result is
+    # 'success' or 'failure' — not 'skipped' or 'cancelled'). With
+    # fail-fast: false, even if half the matrix fails, the surviving
+    # artifacts should still ship.
+    if: ${{ inputs.publish_release && !cancelled() && needs.build.result != 'skipped' }}
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 30
     permissions:
@@ -452,14 +461,9 @@ jobs:
       - name: Flatten release assets (preserve duplicates via subdir prefix)
         run: |
           set -euo pipefail
-          # download-artifact v4 with merge-multiple=false creates one
-          # subdir per artifact, named after the artifact. Inside each,
-          # armbian's raw filenames live. Move every file up one level
-          # into release-assets/, prefixing with the parent subdir name
-          # when the destination already exists — that way ab/recovery
-          # images with identical armbian-generated basenames both
-          # survive in the flat release folder.
-          mkdir -p release-flat
+          # Defensive: download-artifact may not create the path dir if
+          # no artifacts matched (e.g. every build for this board failed).
+          mkdir -p release-assets release-flat
           find release-assets -mindepth 2 -type f | while IFS= read -r f; do
             base=$(basename "$f")
             parent=$(basename "$(dirname "$f")")
@@ -472,7 +476,10 @@ jobs:
           rm -rf release-assets
           mv release-flat release-assets
           echo "=== Final release assets ==="
-          ls -lh release-assets/
+          if ! ls -lh release-assets/ | tail -n +2; then
+            echo "No assets — every matrix entry for this board failed; skipping release."
+            exit 1
+          fi
 
       - name: List release assets
         run: find release-assets/ -type f -printf '%f\n' | sort
