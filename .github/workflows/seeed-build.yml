@@ -265,6 +265,23 @@ jobs:
           echo "short_board=$short" >> "$GITHUB_OUTPUT"
           echo "ota_label=$ota" >> "$GITHUB_OUTPUT"
 
+      - name: Pre-fetch Panthor GPU firmware (rk3588 only)
+        # rk3588 board config's pre_update_initramfs hook needs
+        # mali_csffw.bin from the kernel source tree. When the build
+        # hits the deb-tar cache (no actual kernel compile, no
+        # worktree created), the file isn't on disk. Pre-download it
+        # from the linux-rockchip repo to a path the board config
+        # checks as a fallback.
+        if: ${{ contains(matrix.board, 'rk3588') }}
+        run: |
+          set -euo pipefail
+          mkdir -p cache/sources/panthor-firmware
+          curl -fsSL -o cache/sources/panthor-firmware/mali_csffw.bin \
+            "https://raw.githubusercontent.com/armbian/linux-rockchip/rk-6.1-rkr5.1/drivers/gpu/arm/bifrost/mali_csffw.bin"
+          echo "=== mali_csffw.bin ==="
+          ls -lh cache/sources/panthor-firmware/mali_csffw.bin
+          file cache/sources/panthor-firmware/mali_csffw.bin || true
+
       - name: Checkout armbian-build (this fork)
         uses: actions/checkout@v4
         with:
