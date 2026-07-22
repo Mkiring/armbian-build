@@ -257,17 +257,20 @@ jobs:
 
       - name: Install qemu-user-static for x86_64 prebuilt toolchain
         # The CI runner is ARM64; rockchip_sdk_tools ships an x86_64
-        # prebuilt gcc that make.sh env tries to run. qemu-user-static
-        # + binfmt_misc lets it execute via emulation. binfmt_misc is
+        # prebuilt gcc that make.sh env tries to run. qemu-user-binfmt
+        # + binfmt-support lets it execute via emulation. binfmt_misc is
         # a kernel feature, so Docker containers inherit it too.
+        # On Ubuntu 26.04 qemu-user-static is a virtual package; the
+        # real package is qemu-user-binfmt.
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support
-          sudo update-binfmts --enable qemu-x86_64
+          sudo apt-get install -y qemu-user-binfmt binfmt-support
+          sudo update-binfmts --enable qemu-x86_64 || true
           if [ -f /proc/sys/fs/binfmt_misc/qemu-x86_64 ]; then
             echo "qemu-x86_64 binfmt registered OK"
           else
             echo "WARNING: qemu-x86_64 not registered"
+            ls /proc/sys/fs/binfmt_misc/ || true
           fi
 
       - name: Resolve matrix labels
