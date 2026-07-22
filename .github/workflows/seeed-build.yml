@@ -306,13 +306,19 @@ jobs:
           file = 'cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh'
           with open(file, 'r') as f:
               content = f.read()
-          insert = '        [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]] && ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"\n'
+          insert = '''        # DEBUG: rkbin fallback diagnostics
+        echo "DEBUG: SRC=${SRC}"
+        echo "DEBUG: rkbin_dest=${rkbin_dest}"
+        echo "DEBUG: rkbin_dest exists=$(test -d "${rkbin_dest}" && echo yes || echo no)"
+        echo "DEBUG: rkbin-tools exists=$(test -d "${SRC}/cache/sources/rkbin-tools" && echo yes || echo no)"
+        [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]] && { echo "DEBUG: symlinking rkbin-tools -> ${rkbin_dest}"; ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"; }
+'''
           content = content.replace('        bash ./make.sh env', insert + '        bash ./make.sh env')
           with open(file, 'w') as f:
               f.write(content)
           PY
           # Verify the patch landed
-          grep -n "rkbin-tools" cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh
+          grep -n "DEBUG: rkbin" cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh
 
       - name: Symlink build.sh into repo root
         run: |
