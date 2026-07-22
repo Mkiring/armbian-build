@@ -287,22 +287,11 @@ jobs:
           ls -lh cache/sources/linux-kernel-worktree/panthor-fallback/drivers/gpu/arm/bifrost/mali_csffw.bin
           file cache/sources/linux-kernel-worktree/panthor-fallback/drivers/gpu/arm/bifrost/mali_csffw.bin || true
 
-      - name: Inject extension fork URL into board config
-        run: |
-          # Only the seeed_armbian_extension URL is rewritten to the Mkiring fork.
-          # Kernel (linux-rockchip) is pulled from the official armbian/linux-rockchip
-          # repo; changes go through PRs against upstream, not via CI fork swap.
-          sed -i 's|https://github.com/Seeed-Studio/seeed_armbian_extension|https://github.com/Mkiring/seeed_armbian_extension|g' \
-              config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
-
-          echo "=== Verifying substitution ==="
-          grep -n "seeed_armbian_extension" config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -3
-
-      - name: Pre-place seeed_armbian_extension fork
+      - name: Pre-place seeed_armbian_extension
         run: |
           mkdir -p cache/sources
           git clone --depth 1 --branch "${{ inputs.extension_ref }}" \
-              https://github.com/Mkiring/seeed_armbian_extension \
+              https://github.com/Seeed-Studio/seeed_armbian_extension \
               cache/sources/seeed_armbian_extension
           # Symlink so board config's enable_extension picks our pre-placed copy
           mkdir -p extensions
