@@ -297,40 +297,23 @@ jobs:
           mkdir -p extensions
           ln -sf "$PWD/cache/sources/seeed_armbian_extension" extensions/seeed_armbian_extension
 
-      - name: Patch Seeed extension for A/B OTA rkbin fallback
+      - name: Pre-create rkbin symlink for A/B OTA
         run: |
-          file="cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh"
-          # Build the patch block: find + ln -s + display_alert.
-          # display_alert (not echo) so output reaches the GHA log
-          # instead of being captured by armbian's section-logging.
-          cat > /tmp/rkbin-patch.block <<'BLOCK'
-                # Patched: ensure ../rkbin exists for make.sh env
-                display_alert "A/B OTA DEBUG" "SRC=${SRC}" "info"
-                display_alert "A/B OTA DEBUG" "BOOTSOURCEDIR=${BOOTSOURCEDIR}" "info"
-                display_alert "A/B OTA DEBUG" "uboot_src=${uboot_src}" "info"
-                display_alert "A/B OTA DEBUG" "rkbin_dest=${rkbin_dest}" "info"
-                display_alert "A/B OTA DEBUG" "rkbin_dest exists=$(test -d "${rkbin_dest}" && echo yes || echo no)" "info"
-                display_alert "A/B OTA DEBUG" "rkbin-tools exists=$(test -d "${SRC}/cache/sources/rkbin-tools" && echo yes || echo no)" "info"
-                # find u-boot worktrees for debugging
-                find "${SRC}/cache/sources" -maxdepth 5 -name "make.sh" -path "*u-boot*" 2>/dev/null | while IFS= read -r _f; do
-                    display_alert "A/B OTA DEBUG" "found make.sh: ${_f}" "info"
-                done
-                if [[ ! -d "${rkbin_dest}" ]]; then
-                    if [[ -d "${SRC}/cache/sources/rkbin-tools" ]]; then
-                        ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"
-                        display_alert "A/B OTA DEBUG" "symlinked rkbin-tools -> ${rkbin_dest}" "info"
-                    else
-                        display_alert "A/B OTA DEBUG" "rkbin-tools NOT FOUND at ${SRC}/cache/sources/rkbin-tools" "err"
-                    fi
-                else
-                    display_alert "A/B OTA DEBUG" "rkbin_dest already exists" "info"
-                fi
-          BLOCK
-          # Insert the block after the "cd ${uboot_src}" line (which
-          # immediately precedes "bash ./make.sh env" in the function).
-          sed -i '/cd.*uboot_src.*exit 1/r /tmp/rkbin-patch.block' "$file"
-          # Verify the patch landed
-          grep -n "A/B OTA DEBUG" "$file"
+          # u-boot's make.sh env expects ../rkbin to exist next to the
+          # u-boot worktree. The Seeed extension tries to copy it from
+          # rockchip_sdk_tools but that doesn't always land in the right
+          # place. Pre-create a relative symlink to armbian's rkbin-tools
+          # (fetched during build to cache/sources/rkbin-tools) so the
+          # symlink resolves by the time make.sh env runs.
+          #
+          # BOOTSOURCEDIR = u-boot-worktree/u-boot-rockchip64/next-dev-v2024.10
+          # (BOOTDIR=u-boot-rockchip64, BOOTBRANCH=branch:next-dev-v2024.10
+          #  — same for both rk3576 and rk3588 vendor branches)
+          # rkbin_dest = cache/sources/u-boot-worktree/u-boot-rockchip64/rkbin
+          mkdir -p cache/sources/u-boot-worktree/u-boot-rockchip64
+          ln -sfn ../../rkbin-tools cache/sources/u-boot-worktree/u-boot-rockchip64/rkbin
+          echo "=== rkbin symlink ==="
+          ls -la cache/sources/u-boot-worktree/u-boot-rockchip64/
 
       - name: Symlink build.sh into repo root
         run: |
