@@ -255,6 +255,25 @@ jobs:
           echo "Disk space after cleanup:"
           df -h /
 
+      - name: Install qemu-user-binfmt for cross-arch rootfs chroot
+        # armbian's prepare_host_binfmt_qemu() runs `update-binfmts
+        # --enable qemu-arm/qemu-aarch64/...` inside the docker
+        # container to chroot into the arm64 rootfs on this x86_64
+        # host. That only works if qemu interpreters are registered
+        # on the host with the fix-binary (F) flag, which propagates
+        # registrations into containers. On Ubuntu 26.04 the real
+        # package is qemu-user-binfmt (qemu-user-static is a virtual
+        # package with no candidate). Installing qemu-user-binfmt +
+        # binfmt-support registers all foreign arches via postinst
+        # with the F flag — no manual update-binfmts call needed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-binfmt binfmt-support
+          echo "=== binfmt_misc registrations (host) ==="
+          ls /proc/sys/fs/binfmt_misc/ || true
+          echo "=== qemu-aarch64 entry ==="
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null || echo "qemu-aarch64 not registered"
+
       - name: Resolve matrix labels
         id: lbl
         run: |
