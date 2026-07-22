@@ -1,4 +1,4 @@
-name: Seeed Build
+name: "Seeed Build"
 
 on:
   workflow_dispatch:
