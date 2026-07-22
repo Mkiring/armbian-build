@@ -299,35 +299,38 @@ jobs:
 
       - name: Patch Seeed extension for A/B OTA rkbin fallback
         run: |
-          # Seeed's extension does not guarantee ../rkbin exists when
-          # `make.sh env` runs for A/B OTA. Fall back to armbian's
-          # rkbin-tools clone, which is already a valid Rockchip rkbin tree.
-          python3 <<'PY'
-          file = 'cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh'
-          with open(file, 'r') as f:
-              content = f.read()
-          insert_lines = [
-              '        # DEBUG: rkbin fallback diagnostics',
-              '        echo "DEBUG: SRC=${SRC}"',
-              '        echo "DEBUG: rkbin_dest=${rkbin_dest}"',
-              '        if [[ ! -d "${rkbin_dest}" ]]; then',
-              '            if [[ -d "${SRC}/cache/sources/rkbin-tools" ]]; then',
-              '                echo "DEBUG: symlinking rkbin-tools -> ${rkbin_dest}"',
-              '                ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"',
-              '            else',
-              '                echo "DEBUG: rkbin-tools not found at ${SRC}/cache/sources/rkbin-tools"',
-              '            fi',
-              '        else',
-              '            echo "DEBUG: rkbin_dest already exists: ${rkbin_dest}"',
-              '        fi',
-          ]
-          insert = '\n'.join(insert_lines) + '\n'
-          content = content.replace('        bash ./make.sh env', insert + '        bash ./make.sh env')
-          with open(file, 'w') as f:
-              f.write(content)
-          PY
+          file="cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh"
+          # Build the patch block: find + ln -s + display_alert.
+          # display_alert (not echo) so output reaches the GHA log
+          # instead of being captured by armbian's section-logging.
+          cat > /tmp/rkbin-patch.block <<'BLOCK'
+                # Patched: ensure ../rkbin exists for make.sh env
+                display_alert "A/B OTA DEBUG" "SRC=${SRC}" "info"
+                display_alert "A/B OTA DEBUG" "BOOTSOURCEDIR=${BOOTSOURCEDIR}" "info"
+                display_alert "A/B OTA DEBUG" "uboot_src=${uboot_src}" "info"
+                display_alert "A/B OTA DEBUG" "rkbin_dest=${rkbin_dest}" "info"
+                display_alert "A/B OTA DEBUG" "rkbin_dest exists=$(test -d "${rkbin_dest}" && echo yes || echo no)" "info"
+                display_alert "A/B OTA DEBUG" "rkbin-tools exists=$(test -d "${SRC}/cache/sources/rkbin-tools" && echo yes || echo no)" "info"
+                # find u-boot worktrees for debugging
+                find "${SRC}/cache/sources" -maxdepth 5 -name "make.sh" -path "*u-boot*" 2>/dev/null | while IFS= read -r _f; do
+                    display_alert "A/B OTA DEBUG" "found make.sh: ${_f}" "info"
+                done
+                if [[ ! -d "${rkbin_dest}" ]]; then
+                    if [[ -d "${SRC}/cache/sources/rkbin-tools" ]]; then
+                        ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"
+                        display_alert "A/B OTA DEBUG" "symlinked rkbin-tools -> ${rkbin_dest}" "info"
+                    else
+                        display_alert "A/B OTA DEBUG" "rkbin-tools NOT FOUND at ${SRC}/cache/sources/rkbin-tools" "err"
+                    fi
+                else
+                    display_alert "A/B OTA DEBUG" "rkbin_dest already exists" "info"
+                fi
+          BLOCK
+          # Insert the block after the "cd ${uboot_src}" line (which
+          # immediately precedes "bash ./make.sh env" in the function).
+          sed -i '/cd.*uboot_src.*exit 1/r /tmp/rkbin-patch.block' "$file"
           # Verify the patch landed
-          grep -n "DEBUG: rkbin" cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh
+          grep -n "A/B OTA DEBUG" "$file"
 
       - name: Symlink build.sh into repo root
         run: |
