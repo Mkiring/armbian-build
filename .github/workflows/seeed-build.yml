@@ -302,27 +302,17 @@ jobs:
           # Seeed's extension does not guarantee ../rkbin exists when
           # `make.sh env` runs for A/B OTA. Fall back to armbian's
           # rkbin-tools clone, which is already a valid Rockchip rkbin tree.
-          cat > /tmp/ota-rkbin.patch <<'PATCH'
-          --- a/armbian-ota/ota-support.sh
-          +++ b/armbian-ota/ota-support.sh
-          @@ -669,6 +669,14 @@ function pre_package_uboot_image__build_fw_env_tool(){
-                  }
-              fi
-
-          +    # Fallback: rockchip_sdk_tools/rkbin doesn't always land where
-          +    # make.sh env expects it. Use armbian's rkbin-tools as ../rkbin.
-          +    if [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]]; then
-          +        ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}" || {
-          +            display_alert "A/B partition OTA" "Failed to symlink rkbin; AB_PART_OTA requires fw_env build" "err"
-          +            return 1
-          +        }
-          +    fi
-          +
-              (
-                  cd "${uboot_src}" || exit 1
-                  bash ./make.sh env
-          PATCH
-          patch -p1 -d cache/sources/seeed_armbian_extension < /tmp/ota-rkbin.patch
+          python3 <<'PY'
+          file = 'cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh'
+          with open(file, 'r') as f:
+              content = f.read()
+          insert = '        [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]] && ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"\n'
+          content = content.replace('        bash ./make.sh env', insert + '        bash ./make.sh env')
+          with open(file, 'w') as f:
+              f.write(content)
+          PY
+          # Verify the patch landed
+          grep -n "rkbin-tools" cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh
 
       - name: Symlink build.sh into repo root
         run: |
