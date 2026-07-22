@@ -306,13 +306,22 @@ jobs:
           file = 'cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh'
           with open(file, 'r') as f:
               content = f.read()
-          insert = '''        # DEBUG: rkbin fallback diagnostics
-        echo "DEBUG: SRC=${SRC}"
-        echo "DEBUG: rkbin_dest=${rkbin_dest}"
-        echo "DEBUG: rkbin_dest exists=$(test -d "${rkbin_dest}" && echo yes || echo no)"
-        echo "DEBUG: rkbin-tools exists=$(test -d "${SRC}/cache/sources/rkbin-tools" && echo yes || echo no)"
-        [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]] && { echo "DEBUG: symlinking rkbin-tools -> ${rkbin_dest}"; ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"; }
-'''
+          insert_lines = [
+              '        # DEBUG: rkbin fallback diagnostics',
+              '        echo "DEBUG: SRC=${SRC}"',
+              '        echo "DEBUG: rkbin_dest=${rkbin_dest}"',
+              '        if [[ ! -d "${rkbin_dest}" ]]; then',
+              '            if [[ -d "${SRC}/cache/sources/rkbin-tools" ]]; then',
+              '                echo "DEBUG: symlinking rkbin-tools -> ${rkbin_dest}"',
+              '                ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}"',
+              '            else',
+              '                echo "DEBUG: rkbin-tools not found at ${SRC}/cache/sources/rkbin-tools"',
+              '            fi',
+              '        else',
+              '            echo "DEBUG: rkbin_dest already exists: ${rkbin_dest}"',
+              '        fi',
+          ]
+          insert = '\n'.join(insert_lines) + '\n'
           content = content.replace('        bash ./make.sh env', insert + '        bash ./make.sh env')
           with open(file, 'w') as f:
               f.write(content)
