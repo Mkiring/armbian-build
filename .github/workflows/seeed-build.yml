@@ -127,6 +127,10 @@ env:
   KERNEL_CONFIGURE: "no"
   VENDOR: "Armbian"
   DOCKER_IMAGE: "ghcr.io/armbian/docker-armbian-build:armbian-ubuntu-noble-latest"
+  # Clear QEMU_CPU so qemu-x86_64 (used for the x86_64 prebuilt gcc in
+  # rockchip_sdk_tools) doesn't pick up an ARM CPU model like cortex-a53
+  # from the build environment.
+  QEMU_CPU: ""
 
 jobs:
   plan:
