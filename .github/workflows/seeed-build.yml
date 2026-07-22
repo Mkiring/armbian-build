@@ -127,10 +127,6 @@ env:
   KERNEL_CONFIGURE: "no"
   VENDOR: "Armbian"
   DOCKER_IMAGE: "ghcr.io/armbian/docker-armbian-build:armbian-ubuntu-noble-latest"
-  # Clear QEMU_CPU so qemu-x86_64 (used for the x86_64 prebuilt gcc in
-  # rockchip_sdk_tools) doesn't pick up an ARM CPU model like cortex-a53
-  # from the build environment.
-  QEMU_CPU: ""
 
 jobs:
   plan:
@@ -233,7 +229,7 @@ jobs:
 
   build:
     needs: plan
-    runs-on: ubuntu-26.04-arm
+    runs-on: ubuntu-26.04
     timeout-minutes: 600
     strategy:
       fail-fast: false
@@ -258,23 +254,6 @@ jobs:
           docker system prune -af --volumes || true
           echo "Disk space after cleanup:"
           df -h /
-
-      - name: Install qemu-user-static for x86_64 prebuilt toolchain
-        # The CI runner is ARM64; rockchip_sdk_tools ships an x86_64
-        # prebuilt gcc that make.sh env tries to run. qemu-user-binfmt
-        # + binfmt-support lets it execute via emulation. binfmt_misc is
-        # a kernel feature, so Docker containers inherit it too.
-        # On Ubuntu 26.04 qemu-user-static is a virtual package; the
-        # real package is qemu-user-binfmt.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-binfmt binfmt-support
-          echo "=== update-binfmts --enable qemu-x86_64 ==="
-          sudo update-binfmts --enable qemu-x86_64
-          echo "=== binfmt_misc registrations ==="
-          ls -la /proc/sys/fs/binfmt_misc/ || true
-          echo "=== qemu-x86_64 entry ==="
-          cat /proc/sys/fs/binfmt_misc/qemu-x86_64 2>/dev/null || echo "qemu-x86_64 not registered"
 
       - name: Resolve matrix labels
         id: lbl
@@ -491,7 +470,7 @@ jobs:
     # fail-fast: false, even if half the matrix fails, the surviving
     # artifacts should still ship.
     if: ${{ inputs.publish_release && !cancelled() && needs.build.result != 'skipped' }}
-    runs-on: ubuntu-26.04-arm
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: write
