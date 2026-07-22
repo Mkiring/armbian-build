@@ -297,6 +297,33 @@ jobs:
           mkdir -p extensions
           ln -sf "$PWD/cache/sources/seeed_armbian_extension" extensions/seeed_armbian_extension
 
+      - name: Patch Seeed extension for A/B OTA rkbin fallback
+        run: |
+          # Seeed's extension does not guarantee ../rkbin exists when
+          # `make.sh env` runs for A/B OTA. Fall back to armbian's
+          # rkbin-tools clone, which is already a valid Rockchip rkbin tree.
+          cat > /tmp/ota-rkbin.patch <<'PATCH'
+          --- a/armbian-ota/ota-support.sh
+          +++ b/armbian-ota/ota-support.sh
+          @@ -669,6 +669,14 @@ function pre_package_uboot_image__build_fw_env_tool(){
+                  }
+              fi
+
+          +    # Fallback: rockchip_sdk_tools/rkbin doesn't always land where
+          +    # make.sh env expects it. Use armbian's rkbin-tools as ../rkbin.
+          +    if [[ ! -d "${rkbin_dest}" && -d "${SRC}/cache/sources/rkbin-tools" ]]; then
+          +        ln -sfn "${SRC}/cache/sources/rkbin-tools" "${rkbin_dest}" || {
+          +            display_alert "A/B partition OTA" "Failed to symlink rkbin; AB_PART_OTA requires fw_env build" "err"
+          +            return 1
+          +        }
+          +    fi
+          +
+              (
+                  cd "${uboot_src}" || exit 1
+                  bash ./make.sh env
+          PATCH
+          patch -p1 -d cache/sources/seeed_armbian_extension < /tmp/ota-rkbin.patch
+
       - name: Symlink build.sh into repo root
         run: |
           # build.sh does `cd $SCRIPT_DIR; [[ -f compile.sh ]]`, so it must
