@@ -67,6 +67,16 @@ on:
         type: boolean
         default: false
 
+      # ── Security profiles (each becomes a separate matrix dimension) ──
+      secure_rootfs:
+        description: "Security: secure-rootfs (LUKS root + OP-TEE/SSKR auto-unlock)"
+        type: boolean
+        default: false
+      secure_boot:
+        description: "Security: secure-boot (Secure U-Boot + secure-rootfs; requires DEV_CRT + PRIVATE_KEY_PEM secrets)"
+        type: boolean
+        default: false
+
       # ── Other options ─────────────────────────────────────────────────
       desktop:
         description: "Desktop environment (used only when tier != cli)"
@@ -177,6 +187,15 @@ jobs:
           if not otas:
               otas = [""]  # plain image when no OTA box is checked
 
+          # Security profiles. Each selected profile becomes its own
+          # matrix dimension. If none selected, entries have no security
+          # profile (empty string).
+          securities = []
+          if flag("SECURE_ROOTFS"): securities.append("secure-rootfs")
+          if flag("SECURE_BOOT"):   securities.append("secure-boot")
+          if not securities:
+              securities = [""]  # no security profile
+
           errs = []
           if not boards:   errs.append("select at least one board")
           if not releases: errs.append("select at least one release")
@@ -185,18 +204,19 @@ jobs:
               raise SystemExit("ERROR: " + "; ".join(errs))
 
           entries = []
-          for (b, r, t, p) in itertools.product(boards, releases, tiers, otas):
+          for (b, r, t, p, s) in itertools.product(boards, releases, tiers, otas, securities):
               entries.append({
                   "board": b,
                   "release": r,
                   "tier": t,
                   "profile": p,
+                  "security": s,
                   "is_cli": 1 if t == "cli" else 0,
               })
 
           print(f"::group::Matrix entries ({len(entries)})")
           for e in entries:
-              print(f"  board={e['board']:<28} release={e['release']:<10} tier={e['tier']:<8} profile={e['profile'] or '(none)'}")
+              print(f"  board={e['board']:<28} release={e['release']:<10} tier={e['tier']:<8} profile={e['profile'] or '(none)'} security={e['security'] or '(none)'}")
           print("::endgroup::")
 
           boards_unique = list(dict.fromkeys(boards))
@@ -221,6 +241,8 @@ jobs:
           OTA_PLAIN:    ${{ inputs.ota_plain }}
           OTA_RECOVERY: ${{ inputs.ota_recovery }}
           OTA_AB:       ${{ inputs.ota_ab }}
+          SECURE_ROOTFS: ${{ inputs.secure_rootfs }}
+          SECURE_BOOT:   ${{ inputs.secure_boot }}
 
       - name: Print summary
         run: |
@@ -281,8 +303,11 @@ jobs:
           short=$(echo "${{ matrix.board }}" | sed -E 's/recomputer-//; s/-devkit//')
           ota="${{ matrix.profile }}"
           [ -z "$ota" ] && ota="plain"
+          sec="${{ matrix.security }}"
+          [ -z "$sec" ] && sec="nosec"
           echo "short_board=$short" >> "$GITHUB_OUTPUT"
           echo "ota_label=$ota" >> "$GITHUB_OUTPUT"
+          echo "sec_label=$sec" >> "$GITHUB_OUTPUT"
 
       - name: Checkout armbian-build (this fork)
         uses: actions/checkout@v4
@@ -362,6 +387,28 @@ jobs:
           echo "=== rkbin symlink ==="
           ls -la cache/sources/u-boot-worktree/u-boot-rockchip64/
 
+      - name: Place FIT signing keys for secure profiles
+        # secure-boot requires dev.crt + private_key.pem for U-Boot FIT
+        # signing. secure-rootfs (OPTEE bootchain) also uses FIT keys but
+        # can auto-generate them; we supply our own for consistency.
+        # The extension reads from UBOOT_FIT_KEYS_BACKUP_DIR during build.
+        if: ${{ matrix.security == 'secure-boot' || matrix.security == 'secure-rootfs' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fit-keys
+          printf '%s\n' "${PRIVATE_KEY_PEM}" > /tmp/fit-keys/private_key.pem
+          printf '%s\n' "${DEV_CRT}" > /tmp/fit-keys/dev.crt
+          chmod 0600 /tmp/fit-keys/private_key.pem
+          chmod 0644 /tmp/fit-keys/dev.crt
+          echo "=== FIT keys placed at /tmp/fit-keys ==="
+          ls -la /tmp/fit-keys/
+          echo "=== Key sanity check ==="
+          openssl rsa -in /tmp/fit-keys/private_key.pem -check -noout 2>&1 || true
+          openssl x509 -in /tmp/fit-keys/dev.crt -noout -subject 2>&1 || true
+        env:
+          PRIVATE_KEY_PEM: ${{ secrets.PRIVATE_KEY_PEM }}
+          DEV_CRT: ${{ secrets.DEV_CRT }}
+
       - name: Symlink build.sh into repo root
         run: |
           # build.sh does `cd $SCRIPT_DIR; [[ -f compile.sh ]]`, so it must
@@ -403,8 +450,9 @@ jobs:
           path: |
             output/debs
             output/packages-hashed
-          key: debs-arm64-${{ matrix.board }}-vendor-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
+          key: debs-arm64-${{ matrix.board }}-vendor-${{ matrix.security }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
           restore-keys: |
+            debs-arm64-${{ matrix.board }}-vendor-${{ matrix.security }}-
             debs-arm64-${{ matrix.board }}-vendor-
 
       - name: Restore ccache
@@ -421,8 +469,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/rootfs
-          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ hashFiles('config/sources/**/*.inc') }}
+          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ matrix.security }}-${{ hashFiles('config/sources/**/*.inc') }}
           restore-keys: |
+            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ matrix.security }}-
             rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-
             rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-
             rootfs-${{ matrix.release }}-
@@ -453,10 +502,17 @@ jobs:
           # Passphrase for encrypted profiles; not a real secret in CI test.
           export CRYPTROOT_PASSPHRASE="${{ secrets.CRYPTROOT_PASSPHRASE || 'armbian-ci-test' }}"
 
+          # FIT signing keys for secure-boot / secure-rootfs profiles.
+          # The extension reads from this directory during u-boot build.
+          if [[ -d /tmp/fit-keys ]]; then
+              export UBOOT_FIT_KEYS_BACKUP_DIR="/tmp/fit-keys"
+          fi
+
           # shellcheck disable=SC2086
           ./seeed-build.sh \
             $MODE_ARGS \
             ${{ matrix.profile }} \
+            ${{ matrix.security }} \
             -b "${{ matrix.board }}" \
             -R "${{ matrix.release }}" \
             $TIER_ARGS \
@@ -493,7 +549,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Armbian-img-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ github.run_id }}
+          name: Armbian-img-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ steps.lbl.outputs.sec_label }}-${{ github.run_id }}
           # Ship armbian's raw output plus the .img.xz we added to
           # satisfy GitHub's 2 GiB asset cap. Original .img is removed
           # after compression to keep the artifact small.
