@@ -326,6 +326,17 @@ jobs:
           grep 'fetch_from_repo.*seeed_armbian_extension' \
               config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
 
+      - name: Patch armbian docker.sh to forward CRYPTROOT_PASSPHRASE
+        # armbian's Docker env whitelist (lib/functions/host/docker.sh)
+        # doesn't include CRYPTROOT_PASSPHRASE, so it never reaches the
+        # container even when exported on the host. Add it to DOCKER_ARGS
+        # so encrypted-rootfs builds can read the passphrase inside Docker.
+        run: |
+          sed -i '/"--env" "ARMBIAN_RUNNING_IN_CONTAINER=yes"/a\\t\t"--env" "CRYPTROOT_PASSPHRASE=${CRYPTROOT_PASSPHRASE:-}"' \
+              lib/functions/host/docker.sh
+          echo "=== CRYPTROOT_PASSPHRASE forwarding in docker.sh ==="
+          grep -n 'CRYPTROOT_PASSPHRASE' lib/functions/host/docker.sh
+
       - name: Pre-fetch Panthor GPU firmware (rk3588 only)
         # rk3588 board config's pre_update_initramfs hook needs
         # mali_csffw.bin from the kernel source tree. When the build
