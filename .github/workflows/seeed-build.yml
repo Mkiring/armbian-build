@@ -316,6 +316,34 @@ jobs:
           mkdir -p extensions
           ln -sf "$PWD/cache/sources/seeed_armbian_extension" extensions/seeed_armbian_extension
 
+      - name: Patch seeed extension to skip armbian-imager
+        # armbian-imager is only published on GitHub releases, not on
+        # apt.armbian.com, so module_desktops install fails on any
+        # release. Add a hook that comments it out of common.yaml until
+        # the upstream armbian-configng is fixed.
+        run: |
+          cat >> cache/sources/seeed_armbian_extension/seeed_armbian_extension.sh <<'EOF'
+
+          # Patch out armbian-imager from armbian-configng's desktop common
+          # package list. It is not published on apt.armbian.com (only on
+          # GitHub release), so installing it on any release will fail.
+          function post_post_debootstrap_tweaks__seeed_remove_armbian_imager() {
+              local common_yaml="${SRC}/cache/sources/armbian-configng/tools/modules/desktops/yaml/common.yaml"
+              if [[ ! -f "${common_yaml}" ]]; then
+                  display_alert "seeed_armbian_extension" "common.yaml not found, skipping armbian-imager patch" "wrn"
+                  return 0
+              fi
+
+              if grep -qE '^[[:space:]]*- armbian-imager' "${common_yaml}"; then
+                  sed -i '/^[[:space:]]*- armbian-imager/s/^/# /' "${common_yaml}"
+                  display_alert "seeed_armbian_extension" "Patched common.yaml: removed armbian-imager" "info"
+              else
+                  display_alert "seeed_armbian_extension" "armbian-imager already absent from common.yaml" "debug"
+              fi
+          }
+          EOF
+          echo "Patched seeed_armbian_extension.sh with armbian-imager removal hook"
+
       - name: Pre-create rkbin symlink for A/B OTA
         run: |
           # u-boot's make.sh env expects ../rkbin to exist next to the
