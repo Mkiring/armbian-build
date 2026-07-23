@@ -418,16 +418,16 @@ jobs:
         if: ${{ matrix.security == 'secure-boot' || matrix.security == 'secure-rootfs' }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/fit-keys
-          printf '%s\n' "${PRIVATE_KEY_PEM}" > /tmp/fit-keys/private_key.pem
-          printf '%s\n' "${DEV_CRT}" > /tmp/fit-keys/dev.crt
-          chmod 0600 /tmp/fit-keys/private_key.pem
-          chmod 0644 /tmp/fit-keys/dev.crt
-          echo "=== FIT keys placed at /tmp/fit-keys ==="
-          ls -la /tmp/fit-keys/
+          mkdir -p cache/sources/fit-keys
+          printf '%s\n' "${PRIVATE_KEY_PEM}" > cache/sources/fit-keys/private_key.pem
+          printf '%s\n' "${DEV_CRT}" > cache/sources/fit-keys/dev.crt
+          chmod 0600 cache/sources/fit-keys/private_key.pem
+          chmod 0644 cache/sources/fit-keys/dev.crt
+          echo "=== FIT keys placed at cache/sources/fit-keys ==="
+          ls -la cache/sources/fit-keys/
           echo "=== Key sanity check ==="
-          openssl rsa -in /tmp/fit-keys/private_key.pem -check -noout 2>&1 || true
-          openssl x509 -in /tmp/fit-keys/dev.crt -noout -subject 2>&1 || true
+          openssl rsa -in cache/sources/fit-keys/private_key.pem -check -noout 2>&1 || true
+          openssl x509 -in cache/sources/fit-keys/dev.crt -noout -subject 2>&1 || true
         env:
           PRIVATE_KEY_PEM: ${{ secrets.PRIVATE_KEY_PEM }}
           DEV_CRT: ${{ secrets.DEV_CRT }}
@@ -527,8 +527,10 @@ jobs:
 
           # FIT signing keys for secure-boot / secure-rootfs profiles.
           # The extension reads from this directory during u-boot build.
-          if [[ -d /tmp/fit-keys ]]; then
-              export UBOOT_FIT_KEYS_BACKUP_DIR="/tmp/fit-keys"
+          # Keys are inside the repo workspace so Docker can see them.
+          # Path must be the Docker-internal mount point (/armbian).
+          if [[ -d cache/sources/fit-keys ]]; then
+              export UBOOT_FIT_KEYS_BACKUP_DIR="/armbian/cache/sources/fit-keys"
           fi
 
           # shellcheck disable=SC2086
