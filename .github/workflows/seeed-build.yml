@@ -334,6 +334,26 @@ jobs:
           echo "=== rkbin symlink ==="
           ls -la cache/sources/u-boot-worktree/u-boot-rockchip64/
 
+      - name: Patch extension for dynamic AB_ROOTFS_SIZE
+        run: |
+          file="cache/sources/seeed_armbian_extension/armbian-ota/ota-support.sh"
+          cat > /tmp/ab-rootfs-dynamic.block <<'BLOCK'
+                  if [[ -z "${AB_ROOTFS_SIZE}" ]]; then
+                      local _actual_mib=$(du --apparent-size -sm "${SDCARD}" 2>/dev/null | awk '{print $1}')
+                      AB_ROOTFS_SIZE=$(( (_actual_mib + _actual_mib / 10 + 256 + 63) / 64 * 64 ))
+                      display_alert "A/B partition OTA" "Dynamic AB_ROOTFS_SIZE: actual=${_actual_mib}MiB -> partition=${AB_ROOTFS_SIZE}MiB (10% + 256MiB headroom)" "info"
+                  fi
+          BLOCK
+          awk '
+          /AB_ROOTFS_SIZE:-4608/ {
+              while ((getline line < "/tmp/ab-rootfs-dynamic.block") > 0) print line
+              close("/tmp/ab-rootfs-dynamic.block")
+              next
+          }
+          { print }
+          ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+          grep -n "Dynamic AB_ROOTFS_SIZE" "$file"
+
       - name: Symlink build.sh into repo root
         run: |
           # build.sh does `cd $SCRIPT_DIR; [[ -f compile.sh ]]`, so it must
