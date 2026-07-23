@@ -317,14 +317,18 @@ jobs:
       - name: Patch board config to use selected extension ref
         # The board config hardcodes fetch_from_repo ... branch:main,
         # which overwrites our pre-placed extension with main during
-        # build. Patch it to use the extension_ref input so fix/secure_boot
-        # (or any other branch) survives the board config sourcing.
+        # build. Two fixes:
+        # 1) Point the branch at the user-selected ref
+        # 2) Comment out fetch_from_repo entirely so our pre-cloned +
+        #    patched extension survives — the yml already clones it.
         run: |
           sed -i 's|branch:main|branch:${{ inputs.extension_ref }}|' \
               config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
-          echo "=== Extension ref in board config ==="
-          grep 'fetch_from_repo.*seeed_armbian_extension' \
+          sed -i '/fetch_from_repo.*seeed_armbian_extension/s/^/# /' \
               config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
+          echo "=== board config after patch ==="
+          grep -n 'seeed_armbian_extension' \
+              config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -5
 
       - name: Patch armbian docker.sh to forward CRYPTROOT_PASSPHRASE
         # armbian's Docker env whitelist (lib/functions/host/docker.sh)
@@ -391,6 +395,22 @@ jobs:
           }
           EOF
           echo "Patched seeed_armbian_extension.sh with armbian-imager removal hook"
+
+      - name: Patch extension auto-decrypt defconfig timing bug
+        # build_custom_uboot__100_autodecrypt_prepare_defconfig runs
+        # BEFORE compile_uboot_target (which calls patch_uboot_target),
+        # so the vendor defconfig doesn't exist yet when the hook tries
+        # to merge the secure config fragment. Remove the premature call;
+        # the patch_uboot_target wrapper (installed by the same hook)
+        # already calls the fragment merge AFTER patches are applied.
+        run: |
+          file="cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/rk-auto-decryption-disk.sh"
+          sed -i '/^    rk_autodecrypt_prepare_defconfig_for_current_tree$/d' "$file"
+          echo "=== auto-decrypt hook after patch ==="
+          sed -n '/function build_custom_uboot__100_autodecrypt_prepare_defconfig/,/^}/p' "$file"
+          echo "=== wrapper call still intact ==="
+          grep -n 'rk_autodecrypt_prepare_defconfig_for_current_tree' \
+              cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/build-hooks/auto-decryption.sh
 
       - name: Pre-create rkbin symlink for A/B OTA
         run: |
