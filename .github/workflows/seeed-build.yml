@@ -314,6 +314,18 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Patch board config to use selected extension ref
+        # The board config hardcodes fetch_from_repo ... branch:main,
+        # which overwrites our pre-placed extension with main during
+        # build. Patch it to use the extension_ref input so fix/secure_boot
+        # (or any other branch) survives the board config sourcing.
+        run: |
+          sed -i 's|branch:main|branch:${{ inputs.extension_ref }}|' \
+              config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
+          echo "=== Extension ref in board config ==="
+          grep 'fetch_from_repo.*seeed_armbian_extension' \
+              config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc
+
       - name: Pre-fetch Panthor GPU firmware (rk3588 only)
         # rk3588 board config's pre_update_initramfs hook needs
         # mali_csffw.bin from the kernel source tree. When the build
