@@ -330,6 +330,20 @@ jobs:
           grep -n 'seeed_armbian_extension' \
               config/sources/vendors/seeed-studio/recomputer-rk35xx-common.inc | head -5
 
+      - name: Add trailing blank line to vendor defconfigs
+        # merge_config.sh uses sed -i which can strip the trailing newline
+        # from the defconfig. When the fragment is then appended via
+        # `cat fragment >> defconfig`, the first fragment line concatenates
+        # with the last defconfig line (e.g. CONFIG_CMD_I2C=y gets pasted
+        # with CONFIG_SPL_FIT_GENERATOR). A trailing blank line prevents
+        # this concatenation. Apply to both rk3576 and rk3588 defconfigs.
+        run: |
+          for f in patch/u-boot/legacy/u-boot-radxa-rk35xx/defconfig/recomputer-rk35{76,88}-devkit_defconfig; do
+            [[ -f "$f" ]] || continue
+            echo "" >> "$f"
+            echo "Added trailing blank line to $f"
+          done
+
       - name: Patch armbian docker.sh to forward CRYPTROOT_PASSPHRASE
         # armbian's Docker env whitelist (lib/functions/host/docker.sh)
         # doesn't include CRYPTROOT_PASSPHRASE, so it never reaches the
