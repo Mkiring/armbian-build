@@ -431,22 +431,6 @@ jobs:
           EOF
           echo "Patched seeed_armbian_extension.sh with DTB copy hook"
 
-      - name: Patch extension auto-decrypt defconfig timing bug
-        # build_custom_uboot__100_autodecrypt_prepare_defconfig runs
-        # BEFORE compile_uboot_target (which calls patch_uboot_target),
-        # so the vendor defconfig doesn't exist yet when the hook tries
-        # to merge the secure config fragment. Remove the premature call;
-        # the patch_uboot_target wrapper (installed by the same hook)
-        # already calls the fragment merge AFTER patches are applied.
-        run: |
-          file="cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/rk-auto-decryption-disk.sh"
-          sed -i '/^    rk_autodecrypt_prepare_defconfig_for_current_tree$/d' "$file"
-          echo "=== auto-decrypt hook after patch ==="
-          sed -n '/function build_custom_uboot__100_autodecrypt_prepare_defconfig/,/^}/p' "$file"
-          echo "=== wrapper call still intact ==="
-          grep -n 'rk_autodecrypt_prepare_defconfig_for_current_tree' \
-              cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/build-hooks/auto-decryption.sh
-
       - name: Pre-create rkbin symlink for A/B OTA
         run: |
           # u-boot's make.sh env expects ../rkbin to exist next to the
