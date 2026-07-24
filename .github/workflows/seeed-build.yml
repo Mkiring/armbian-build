@@ -426,18 +426,6 @@ jobs:
           grep -n 'rk_autodecrypt_prepare_defconfig_for_current_tree' \
               cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/build-hooks/auto-decryption.sh
 
-      - name: Patch extension kconfig fragment verification
-        # merge_config.sh fails to replace string config values that
-        # contain '/' (e.g. SPL_FIT_GENERATOR="arch/arm/.../make_fit_atf_optee.sh").
-        # The post-merge verification grep -Fxq then aborts the build.
-        # Relax the check to a warning so the build can proceed — if the
-        # config is truly wrong, `make` will catch it later.
-        run: |
-          file="cache/sources/seeed_armbian_extension/rk_secure-disk-encryption/build-hooks/common.sh"
-          sed -i 's|grep -Fxq "${line}" "${target_config}"|true|' "$file"
-          echo "=== verification after patch ==="
-          grep -n 'grep -Fxq\|true ||' "$file" | head -5
-
       - name: Pre-create rkbin symlink for A/B OTA
         run: |
           # u-boot's make.sh env expects ../rkbin to exist next to the
