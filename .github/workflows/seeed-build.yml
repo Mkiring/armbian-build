@@ -622,6 +622,20 @@ jobs:
             echo "Removing uncompressed $img"
             rm -f "$img"
           done
+          # Split any .img.xz that still exceeds GitHub Release's 2 GiB
+          # asset cap after compression (big desktop images, recovery
+          # images with bundled payloads). .sha256 was computed on the
+          # WHOLE .xz above, so users verify after reassembling with
+          # `cat *.part-* > image.img.xz`. 1.9 GiB chunks leave headroom.
+          for xz_file in output/images/*.img.xz; do
+            size=$(stat -c%s "$xz_file")
+            if [ "$size" -gt 2040000000 ]; then
+              echo "Splitting $xz_file ($(( size / 1024 / 1024 )) MiB) into 1.9 GiB chunks"
+              # -d = numeric suffixes, -a 3 = 3 digits (.part-000, .part-001, ...)
+              split -b 1900M -d -a 3 "$xz_file" "${xz_file}.part-"
+              rm "$xz_file"
+            fi
+          done
           echo "=== output/images/ contents ==="
           ls -lh output/images/
 
@@ -635,6 +649,19 @@ jobs:
           # after compression to keep the artifact small.
           path: output/images/
           if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload u-boot deb (one per board, SPI flash key-burning)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Same deb across all matrix entries of a board (signing keys are
+          # stable, build options don't affect uboot). Release job uses
+          # merge-multiple to dedupe across release/tier/ota/security.
+          name: Armbian-uboot-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ steps.lbl.outputs.sec_label }}-${{ github.run_id }}
+          path: output/debs/linux-u-boot-*.deb
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 0
 
@@ -715,6 +742,27 @@ jobs:
             exit 1
           fi
 
+      - name: Download u-boot deb (same across all matrix entries of this board)
+        uses: actions/download-artifact@v4
+        with:
+          # uboot deb is byte-identical across release/tier/ota/security
+          # for a given board (signing keys stable, build options don't
+          # affect uboot). merge-multiple + same filename → the downloads
+          # overwrite each other, leaving exactly one copy.
+          pattern: Armbian-uboot-${{ steps.tag.outputs.short_board }}-*
+          merge-multiple: true
+          path: uboot-debs
+
+      - name: Stage u-boot deb into release assets
+        run: |
+          set -euo pipefail
+          # Place after flatten so the deb sits at the top level of
+          # release-assets/ alongside the .img.xz chunks.
+          shopt -s nullglob
+          for deb in uboot-debs/*.deb; do
+            cp -v "$deb" release-assets/
+          done
+
       - name: List release assets
         run: find release-assets/ -type f -printf '%f\n' | sort
 
@@ -727,14 +775,29 @@ jobs:
             ## Armbian images for ${{ matrix.board }}
 
             Built from CI run ${{ github.run_id }}.
-            Files are armbian's raw `output/images/` output — no
-            compression, no rename. See each file's paired `.sha` /
-            `-OTA.checksums` for integrity data.
 
-            ## Verify
+            ### Assets
+            - `Armbian_*.img.xz[.part-NNN]` — xz-compressed image. If the
+              compressed file exceeded GitHub's 2 GiB asset cap, it is
+              shipped as `.part-000`, `.part-001`, ... chunks.
+            - `*.img.xz.sha256` — sha256 of the WHOLE `.img.xz` (computed
+              before splitting). Verify after reassembling.
+            - `linux-u-boot-*.deb` — U-Boot package for SPI flash
+              key-burning. Stable across builds; only changes when signing
+              keys rotate.
+
+            ### Verify and flash
 
             ```bash
-            sha256sum -c *.img.sha
+            # If chunked, reassemble first:
+            cat Armbian_*.img.xz.part-* > Armbian_image.img.xz
+
+            # Verify (works for both chunked and unchunked):
+            sha256sum -c *.img.xz.sha256
+
+            # Decompress and flash:
+            xz -d Armbian_image.img.xz
+            sudo dd if=Armbian_image.img of=/dev/sdX bs=4M conv=fsync
             ```
           files: release-assets/*
           fail_on_unmatched_files: true
