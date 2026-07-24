@@ -410,6 +410,27 @@ jobs:
           EOF
           echo "Patched seeed_armbian_extension.sh with armbian-imager removal hook"
 
+          # When the kernel is built from cache (deb hit), the source tree
+          # has no compiled DTBs. The secure-boot extension looks for DTBs
+          # in arch/arm64/boot/dts/rockchip/ and fails with "DTB missing".
+          # This hook copies DTBs from the installed rootfs into the source
+          # tree so resolve_kernel_dtb_path finds them.
+          cat >> cache/sources/seeed_armbian_extension/seeed_armbian_extension.sh <<'EOF'
+
+          function pre_umount_final_image__000_copy_dtb_to_source() {
+              local kernel_src="${SRC}/cache/sources/${LINUXSOURCEDIR}"
+              local dtb_dir="${kernel_src}/arch/arm64/boot/dts/rockchip"
+              mkdir -p "${dtb_dir}" 2>/dev/null || true
+              local copied=0
+              for rdir in "${MOUNT}/boot/dtb-"*/rockchip; do
+                  [[ -d "${rdir}" ]] || continue
+                  cp -n "${rdir}"/*.dtb "${dtb_dir}/" 2>/dev/null && copied=$((copied+1))
+              done
+              display_alert "seeed_armbian_extension" "Copied ${copied} DTB groups from rootfs to kernel source tree" "info"
+          }
+          EOF
+          echo "Patched seeed_armbian_extension.sh with DTB copy hook"
+
       - name: Patch extension auto-decrypt defconfig timing bug
         # build_custom_uboot__100_autodecrypt_prepare_defconfig runs
         # BEFORE compile_uboot_target (which calls patch_uboot_target),
