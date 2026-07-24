@@ -652,19 +652,6 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-      - name: Upload u-boot deb (one per board, SPI flash key-burning)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          # Same deb across all matrix entries of a board (signing keys are
-          # stable, build options don't affect uboot). Release job uses
-          # merge-multiple to dedupe across release/tier/ota/security.
-          name: Armbian-uboot-${{ steps.lbl.outputs.short_board }}-${{ matrix.release }}-${{ matrix.tier }}-${{ steps.lbl.outputs.ota_label }}-${{ steps.lbl.outputs.sec_label }}-${{ github.run_id }}
-          path: output/debs/linux-u-boot-*.deb
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 0
-
       - name: Print ccache stats
         if: always()
         run: |
@@ -742,26 +729,30 @@ jobs:
             exit 1
           fi
 
-      - name: Download u-boot deb (same across all matrix entries of this board)
-        uses: actions/download-artifact@v4
+      - name: Restore u-boot deb from cache
+        # u-boot deb is board-specific and independent of release/tier/ota.
+        # Restore the deb cache (saved by the build job via actions/cache)
+        # and extract just the linux-u-boot-*.deb. Fully decoupled from
+        # the build matrix — no dependency on which entry finished first.
+        uses: actions/cache@v4
         with:
-          # uboot deb is byte-identical across release/tier/ota/security
-          # for a given board (signing keys stable, build options don't
-          # affect uboot). merge-multiple + same filename → the downloads
-          # overwrite each other, leaving exactly one copy.
-          pattern: Armbian-uboot-${{ steps.tag.outputs.short_board }}-*
-          merge-multiple: true
           path: uboot-debs
+          key: uboot-restore-${{ matrix.board }}-${{ github.run_id }}  # unique, never saves
+          restore-keys: |
+            debs-arm64-${{ matrix.board }}-vendor-
+          lookup-only: true
 
       - name: Stage u-boot deb into release assets
         run: |
           set -euo pipefail
-          # Place after flatten so the deb sits at the top level of
-          # release-assets/ alongside the .img.xz chunks.
           shopt -s nullglob
-          for deb in uboot-debs/*.deb; do
-            cp -v "$deb" release-assets/
+          # Copy all u-boot debs found (regular + secure variants if both exist)
+          for deb in uboot-debs/linux-u-boot-*.deb; do
+              cp -v "$deb" release-assets/
           done
+          if ! ls uboot-debs/linux-u-boot-*.deb >/dev/null 2>&1; then
+              echo "No u-boot debs found in cache, continuing without them"
+          fi
 
       - name: List release assets
         run: find release-assets/ -type f -printf '%f\n' | sort
