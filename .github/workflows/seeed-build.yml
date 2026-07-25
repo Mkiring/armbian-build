@@ -512,9 +512,13 @@ jobs:
           path: |
             output/debs
             output/packages-hashed
-          key: debs-arm64-${{ matrix.board }}-vendor-${{ matrix.security }}-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
+          # Key does NOT include security — secure-boot debs have a
+          # "-secure" suffix in the filename, so they coexist in the
+          # same output/debs/ dir without overwriting. Sharing the
+          # cache entry avoids creating 3+ entries per board that
+          # would exceed GitHub's 10 GiB repo limit.
+          key: debs-arm64-${{ matrix.board }}-vendor-${{ hashFiles('config/sources/families/seeed-rk*.conf', 'config/sources/families/rk35xx.conf', 'config/sources/vendors/seeed-studio/*.inc') }}
           restore-keys: |
-            debs-arm64-${{ matrix.board }}-vendor-${{ matrix.security }}-
             debs-arm64-${{ matrix.board }}-vendor-
 
       - name: Restore ccache
@@ -526,21 +530,24 @@ jobs:
             ccache-arm64-${{ matrix.board }}-vendor-
             ccache-arm64-${{ matrix.board }}-
 
-      - name: Restore rootfs cache
-        if: ${{ !inputs.clear_rootfs_cache }}
-        uses: actions/cache@v4
-        with:
-          path: cache/rootfs
-          # Key does NOT include OTA (profile) or security — the base
-          # rootfs (debootstrap + desktop packages) is identical across
-          # OTA/security variants. They add packages on top of this cache.
-          # Sharing the cache avoids creating 5+ × 2 GiB entries that
-          # exceed GitHub's 10 GiB repo limit and evict the kernel deb
-          # cache (forcing kernel recompilation every run).
-          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ hashFiles('config/sources/**/*.inc') }}
-          restore-keys: |
-            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-
-            rootfs-${{ matrix.release }}-
+      # rootfs cache intentionally disabled. Each rootfs cache entry is
+      # ~2 GiB; with multiple release+tier combos the total exceeds
+      # GitHub's 10 GiB repo limit, evicting the kernel deb cache and
+      # forcing a 30+ minute kernel rebuild every run. Rootfs from
+      # scratch is only ~10 minutes — sacrificing it frees ~4-6 GiB
+      # for the kernel deb cache (saves ~30 min) and ccache.
+      # To re-enable: uncomment the step below and remove old rootfs
+      # caches from https://github.com/<org>/<repo>/actions/caches
+      #
+      # - name: Restore rootfs cache
+      #   if: ${{ !inputs.clear_rootfs_cache }}
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: cache/rootfs
+      #     key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ hashFiles('config/sources/**/*.inc') }}
+      #     restore-keys: |
+      #       rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-
+      #       rootfs-${{ matrix.release }}-
 
       - name: Build
         run: |
