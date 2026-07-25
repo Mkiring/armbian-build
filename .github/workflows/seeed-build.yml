@@ -531,10 +531,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cache/rootfs
-          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ matrix.security }}-${{ hashFiles('config/sources/**/*.inc') }}
+          # Key does NOT include OTA (profile) or security — the base
+          # rootfs (debootstrap + desktop packages) is identical across
+          # OTA/security variants. They add packages on top of this cache.
+          # Sharing the cache avoids creating 5+ × 2 GiB entries that
+          # exceed GitHub's 10 GiB repo limit and evict the kernel deb
+          # cache (forcing kernel recompilation every run).
+          key: rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ hashFiles('config/sources/**/*.inc') }}
           restore-keys: |
-            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-${{ matrix.security }}-
-            rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-${{ matrix.profile }}-
             rootfs-${{ matrix.release }}-${{ matrix.tier }}-${{ inputs.desktop }}-
             rootfs-${{ matrix.release }}-
 
