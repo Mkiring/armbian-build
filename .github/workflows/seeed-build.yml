@@ -623,6 +623,55 @@ jobs:
           echo "=== output/images/ contents ==="
           ls -lh output/images/
 
+      - name: Add OTA + security suffix to image filenames
+        # armbian produces identical filenames for different OTA+security
+        # combos (e.g. secure-rootfs AB and secure-boot AB both become
+        # ..._AB_PART.img.xz). Add a suffix (_ab_secureboot, _rec_securerootfs,
+        # etc.) so users can tell images apart and flatten doesn't need
+        # ugly prefixes.
+        run: |
+          suffix=""
+          case "${{ matrix.profile }}" in
+            ab)       suffix="${suffix}_ab" ;;
+            recovery) suffix="${suffix}_rec" ;;
+          esac
+          case "${{ matrix.security }}" in
+            secure-rootfs) suffix="${suffix}_securerootfs" ;;
+            secure-boot)   suffix="${suffix}_secureboot" ;;
+          esac
+          [[ -z "$suffix" ]] && { echo "No suffix needed (plain, no security)"; exit 0; }
+          echo "Suffix: $suffix"
+
+          cd output/images
+          for f in *; do
+            [[ -f "$f" ]] || continue
+            # Insert suffix before .img or _OTA in the filename
+            if [[ "$f" == *.img* ]]; then
+              newname="${f/.img/${suffix}.img}"
+            elif [[ "$f" == *_OTA.* ]]; then
+              newname="${f/_OTA./${suffix}_OTA.}"
+            else
+              continue
+            fi
+            [[ "$newname" != "$f" ]] && mv -- "$f" "$newname"
+          done
+
+          # Recompute sha256 for the renamed .img.xz files so the
+          # filename inside matches. For split files the original .img.xz
+          # was deleted; just update the filename reference.
+          for shafile in *${suffix}*.img.xz.sha256; do
+            [[ -f "$shafile" ]] || continue
+            xzfile="${shafile%.sha256}"
+            if [[ -f "$xzfile" ]]; then
+              sha256sum "$xzfile" > "$shafile"
+            else
+              sed -i "s|  .*$|  ${xzfile}|" "$shafile"
+            fi
+          done
+
+          echo "=== renamed files ==="
+          ls -lh
+
       - name: Upload output/images/ as-is
         if: always()
         uses: actions/upload-artifact@v4
