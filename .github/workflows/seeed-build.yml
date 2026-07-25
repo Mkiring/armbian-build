@@ -701,6 +701,14 @@ jobs:
             parent=$(basename "$(dirname "$f")")
             target="release-flat/$base"
             if [ -e "$target" ]; then
+              # secure-rootfs and secure-boot produce identical filenames
+              # (armbian doesn't include the security profile in image names).
+              # If size matches, skip the duplicate instead of prefixing —
+              # this halves disk usage and avoids runner disk exhaustion.
+              if [ "$(stat -c%s "$f")" = "$(stat -c%s "$target")" ]; then
+                echo "Skipping identical duplicate: $base (from $parent)"
+                continue
+              fi
               target="release-flat/${parent}__${base}"
             fi
             mv "$f" "$target"
